@@ -150,13 +150,3 @@ func strictUnmarshal(raw json.RawMessage, v any) error {
 	}
 	return json.Unmarshal(raw, v)
 }
-
-// columns lists every column the condition reads, once each.
-func (c *Condition) columns(into map[string]bool) {
-	if c.column != "" {
-		into[c.column] = true
-	}
-	for _, child := range c.children {
-		child.columns(into)
-	}
-}

@@ -59,6 +59,29 @@ func TestEval(t *testing.T) {
 	}
 }
 
+func TestMissingColumnsMatterOnlyWhereTheyCouldChangeTheAnswer(t *testing.T) {
+	// The WAL states id and note, a null, but not body.
+	row := view{row: change.Row{"id": text("1"), "note": null}}
+	cases := map[string]truth{
+		`{"eq": ["body", "x"]}`:                                        missing,
+		`{"is_null": "body"}`:                                          missing,
+		`{"not": {"eq": ["body", "x"]}}`:                               missing,
+		`{"or": [{"eq": ["id", 1]}, {"eq": ["body", "x"]}]}`:           yes,
+		`{"or": [{"eq": ["id", 2]}, {"eq": ["body", "x"]}]}`:           missing,
+		`{"and": [{"eq": ["id", 2]}, {"eq": ["body", "x"]}]}`:          no,
+		`{"and": [{"eq": ["id", 1]}, {"eq": ["body", "x"]}]}`:          missing,
+		`{"not": {"and": [{"eq": ["id", 2]}, {"eq": ["body", "x"]}]}}`: yes,
+		// Null and missing together: NOT could turn the missing part either way.
+		`{"and": [{"eq": ["note", "x"]}, {"eq": ["body", "x"]}]}`: missing,
+		`{"or": [{"eq": ["note", "x"]}, {"eq": ["body", "x"]}]}`:  missing,
+	}
+	for where, want := range cases {
+		if got := compile(t, where).eval(row); got != want {
+			t.Errorf("%s: %d, want %d", where, got, want)
+		}
+	}
+}
+
 func TestNumbersAreReadAsPostgresWritesThem(t *testing.T) {
 	gt := compile(t, `{"gt": ["n", 0]}`)
 	for _, s := range []string{"NaN", "Infinity", "1/2", "0x10", "1e99999", ""} {

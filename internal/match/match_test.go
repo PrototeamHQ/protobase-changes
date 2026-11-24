@@ -80,6 +80,18 @@ func TestKeyConditionsNeedNoFullOldRow(t *testing.T) {
 		Tag{10, Leave})
 }
 
+func TestTheKeyAloneCanSettleTheOldRow(t *testing.T) {
+	key := row("id", "1")
+	update := &change.Change{Operation: change.Update, Key: key, NewRow: row("id", "1", "body", "x")}
+	expect(t, "or met by the key", index(t, `{"or": [{"eq": ["id", 1]}, {"eq": ["body", "y"]}]}`).Match("messages", update),
+		Tag{10, Update})
+	expect(t, "and failed by the key", index(t, `{"and": [{"neq": ["id", 1]}, {"eq": ["body", "x"]}]}`).Match("messages", update))
+	deleted := &change.Change{Operation: change.Delete, Key: key, OldRowKind: change.OldKeyOnly, OldRow: key}
+	expect(t, "delete in by the key", index(t, `{"or": [{"in": ["id", [1, 2]]}, {"eq": ["body", "y"]}]}`).Match("messages", deleted),
+		Tag{10, Leave})
+	expect(t, "delete maybe in", index(t, `{"or": [{"eq": ["id", 2]}, {"eq": ["body", "y"]}]}`).Match("messages", deleted))
+}
+
 func TestUnchangedValuesComeFromTheFullOldRow(t *testing.T) {
 	ix := index(t, `{"eq": ["body", "long"]}`)
 	unchanged := change.Row{"id": text("1"), "body": {Kind: change.Unchanged}}

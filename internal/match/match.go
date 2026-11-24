@@ -27,7 +27,7 @@ type membership uint8
 const (
 	out membership = iota
 	in
-	// indeterminate: the WAL lacks a column the conditions read.
+	// indeterminate: the WAL lacks a column the answer depends on.
 	indeterminate
 )
 
@@ -35,13 +35,14 @@ func (e *entry) membership(row *view) membership {
 	if row == nil {
 		return out
 	}
-	for _, column := range e.columns {
-		if _, ok := row.get(column); !ok {
-			return indeterminate
-		}
-	}
-	if e.Where == nil || e.Where.eval(*row) == yes {
+	if e.Where == nil {
 		return in
+	}
+	switch e.Where.eval(*row) {
+	case yes:
+		return in
+	case missing:
+		return indeterminate
 	}
 	return out
 }

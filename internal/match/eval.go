@@ -2,13 +2,15 @@ package match
 
 import "github.com/PrototeamHQ/protobase-changes/internal/change"
 
-// truth is SQL's three-valued logic, where comparing with null is unknown.
+// truth is SQL's three-valued logic, where comparing with null is unknown,
+// plus missing: the WAL lacks a column the answer depends on.
 type truth int8
 
 const (
 	no truth = iota
 	unknown
 	yes
+	missing
 )
 
 func of(b bool) truth {
@@ -18,30 +20,30 @@ func of(b bool) truth {
 	return no
 }
 
-// eval tests the row, which states every column the condition reads, as a
-// WHERE clause would: only yes lets the row in.
+// eval tests the row as a WHERE clause would: only yes lets the row in. A
+// missing column makes the answer missing only where its value could change
+// it: AND is no once one part is no, OR is yes once one part is yes.
 func (c *Condition) eval(row view) truth {
 	switch c.op {
 	case opAnd:
-		result := yes
-		for _, child := range c.children {
-			result = min(result, child.eval(row))
-		}
-		return result
+		return combine(c.children, row, no)
 	case opOr:
-		result := no
-		for _, child := range c.children {
-			result = max(result, child.eval(row))
-		}
-		return result
+		return combine(c.children, row, yes)
 	case opNot:
-		return yes - c.children[0].eval(row)
-	case opIsNull:
-		v, _ := row.get(c.column)
-		return of(v.Kind == change.Null)
+		t := c.children[0].eval(row)
+		if t == missing {
+			return missing
+		}
+		return yes - t
 	}
 
-	v, _ := row.get(c.column)
+	v, ok := row.get(c.column)
+	if !ok {
+		return missing
+	}
+	if c.op == opIsNull {
+		return of(v.Kind == change.Null)
+	}
 	if v.Kind == change.Null {
 		return unknown
 	}
@@ -56,6 +58,29 @@ func (c *Condition) eval(row view) truth {
 		return min(compareWith(opGte, c.values[0], v.Text), compareWith(opLte, c.values[1], v.Text))
 	}
 	return compareWith(c.op, c.values[0], v.Text)
+}
+
+// combine joins the parts of an AND, whose decisive truth is no, or of an
+// OR, whose decisive truth is yes. A decisive part settles the result
+// whatever the missing parts hold; otherwise a missing part leaves it
+// missing, an unknown one unknown, and else it is the other truth.
+func combine(parts []*Condition, row view, decisive truth) truth {
+	result := yes - decisive
+	anyMissing := false
+	for _, part := range parts {
+		switch part.eval(row) {
+		case decisive:
+			return decisive
+		case missing:
+			anyMissing = true
+		case unknown:
+			result = unknown
+		}
+	}
+	if anyMissing {
+		return missing
+	}
+	return result
 }
 
 func compareWith(op operator, c constant, text string) truth {

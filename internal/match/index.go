@@ -18,7 +18,6 @@ type entry struct {
 	Subscription
 	// position orders matches as the subscriptions were given.
 	position int
-	columns  []string
 }
 
 // indexKey is one column's value as an equality states it: as text, or as a
@@ -54,13 +53,6 @@ func NewIndex(subs []Subscription) *Index {
 			ix.resources[sub.Resource] = r
 		}
 		e := &entry{Subscription: sub, position: i}
-		if sub.Where != nil {
-			read := map[string]bool{}
-			sub.Where.columns(read)
-			for column := range read {
-				e.columns = append(e.columns, column)
-			}
-		}
 		r.entries = append(r.entries, e)
 
 		column, values, ok := anchor(sub.Where)
