@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
+	"github.com/PrototeamHQ/protobase-changes/internal/destination"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/serve"
 )
@@ -32,6 +33,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "path of the JSON config listing the apps to follow")
 	showVersion := flags.Bool("version", false, "print the version and exit")
+	runMigrate := flags.Bool("migrate", false, "apply the destination stores' schema and exit")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -52,30 +54,45 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ss, err := stores(cfg)
+	if err != nil {
+		return err
+	}
+	defer closeStores(ss)
+	if *runMigrate {
+		return migrate(ctx, ss)
+	}
+
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
 	fs, err := feeds(cfg, log)
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	err = serveAndFollow(ctx, cfg, fs, log)
+	hs, err := hubs(ctx, cfg, fs, ss, log)
+	if err != nil {
+		return err
+	}
+	err = serveAndFollow(ctx, cfg, fs, hs, log)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
 }
 
-// serveAndFollow runs the readers and the pull endpoints until ctx ends or
-// either fails, which stops the other.
-func serveAndFollow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, log *slog.Logger) error {
+// serveAndFollow runs the readers, the destinations and the endpoints until
+// ctx ends or one of them fails, which stops the others.
+func serveAndFollow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, hs map[string]*destination.Hub, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 	go func() { errs <- follow(ctx, cfg, fs, log) }()
-	go func() { errs <- listen(ctx, cfg.Listen, serve.New(fs).Handler()) }()
+	go func() { errs <- deliver(ctx, hs) }()
+	go func() { errs <- listen(ctx, cfg.Listen, serve.New(fs, hs).Handler()) }()
 	first := <-errs
 	cancel()
+	<-errs
 	<-errs
 	return first
 }
