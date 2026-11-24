@@ -126,7 +126,8 @@ protobase-changes --config changes.json
 ```
 
 - **Download:** one binary or container image per GitHub release, like the relay.
-- **State:** destination cursors go in a `changes` schema in your app's database.
+- **State:** destination cursors go in a `changes` schema in your app's database, or in a SQLite file.
+- **Updates:** `protobase-changes --config changes.json --migrate` applies the store's schema and exits. Run it at each update, before the new version starts; it applies what is missing in one transaction, so a failure leaves the store as it was. Startup never migrates, and stops while the schema is behind.
 - **Archive:** any S3-compatible bucket or a local directory.
 
 ### Configuration
@@ -144,13 +145,15 @@ The config lists every app database to follow; unknown fields stop startup.
       "publication": "protobase_changes",
       "tail_transactions": 10000,
       "issuer": "https://shop.example",
-      "key_files": ["/run/secrets/shop_changes_key"]
+      "key_files": ["/run/secrets/shop_changes_key"],
+      "store": { "kind": "postgres", "url": "postgres://changes@db.internal/shop" },
+      "functions_url": "http://shop.internal/api/functions"
     }
   ]
 }
 ```
 
-- `listen`: the address the pull endpoints serve on.
+- `listen`: the address the pull and destination endpoints serve on.
 
 - `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped.
 - `publication`: must exist before startup.
@@ -158,6 +161,8 @@ The config lists every app database to follow; unknown fields stop startup.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
 - `issuer`: the `iss` of the app's tokens, and the `source` of its events.
 - `key_files`: files that each hold one 32-byte key the app shares, base64url without padding. The first one encrypts cursors; every one opens tokens and cursors, so a new key goes first and the old one stays listed until what it sealed has expired.
+- `store`: where [destinations](#destinations) and their cursors are kept, `{"kind": "postgres", "url": ...}` for a `changes` schema in that database, or `{"kind": "sqlite", "path": ...}` for a file. Without it the app has no destinations.
+- `functions_url`: where the app serves its API functions, which [function destinations](#functions) call by name.
 
 ### Postgres requirements
 
@@ -170,6 +175,7 @@ The config lists every app database to follow; unknown fields stop startup.
   ```
 
   Startup stops when it is missing or skips inserts, updates, deletes or truncates. Once it exists, Postgres refuses UPDATE and DELETE on a table without a primary key or another replica identity.
+- With a Postgres `store`, a role that may create the `changes` schema for `--migrate`, and read and write its tables after.
 
 ### Row changes
 
@@ -254,6 +260,99 @@ The app revokes a session with a `protobase_revoke` message in the transaction t
 - `404`: no app of that name.
 - `410`: the cursor can no longer resume.
 - `503`: the app's stream has not yet read all the WAL there was when it connected, so revocations in it may still be unknown.
+
+## Destinations
+
+Webhooks and the app's own functions get changes in signed batches. Each destination reads the same stream from a cursor of its own, so a change is still one write, and a failing receiver holds back only itself and skips nothing.
+
+### Defining them
+
+The app holds its destinations, such as in its config, and puts all of them at once whenever they change, such as at each deploy:
+
+```http
+PUT /apps/shop/destinations
+Content-Type: application/jose
+
+eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0...
+```
+
+The body is a token encrypted like a live token, so its secrets stay sealed in transit and in the store, which keeps the token as it came. Decrypted:
+
+```json
+{
+  "iss": "https://shop.example", "iat": 1795480000,
+  "destinations": [
+    { "name": "orders-hook", "url": "https://erp.example/hooks/orders",
+      "secret": "whsec_...",
+      "payload": "raw", "batch_size": 100,
+      "subs": [ { "resource": "orders", "where": { "eq": ["tenant_id", "t1"] } } ],
+      "retry": { "tries": 10, "at_limit": "pause" } },
+    { "name": "paid", "function": "route-paid", "url": "https://mail.example/hooks",
+      "secret": "whsec_...", "payload": "thin",
+      "events": [ { "type": "orders.paid", "resource": "orders", "operations": ["insert", "update"],
+                    "old": { "neq": ["status", "paid"] }, "new": { "eq": ["status", "paid"] } } ],
+      "retry": { "at_limit": "dead_letter" } }
+  ]
+}
+```
+
+- `iat` orders the sets: one issued before the kept set is refused with `409`, and putting the kept token again changes nothing. The token has no `exp`, since it stays until a later set replaces it.
+- `name`: letters, digits, `_` and `-`, starting with a letter. A destination keeps its cursor while its name stays; one the set leaves out loses it, and a new one starts at the newest change.
+- `url` gets each batch, and `function` names an API function that gets it first. A destination has one or both.
+- `secret` signs every request, as Standard Webhooks describes: `whsec_` and base64.
+- `payload`: `thin` or `raw`, as for a live token.
+- `subs`: subscriptions as a live token lists them; each transaction with changes they concern becomes one `protobase.changes.transaction` event.
+- `events`: [named events](#named-events).
+- `batch_size`: at most this many events per batch, 1 to 500, 100 by default. A batch holds whole transactions, so one large transaction can pass it.
+- `retry.tries`: how often a batch is sent before `at_limit` applies, 1 to 10, 10 by default. `retry.at_limit` is `pause` or `dead_letter`.
+
+Unknown fields refuse the set with `400`; a token that does not open, or a live token, gets `401`; an app without a `store` gets `404`.
+
+### Named events
+
+A named event, such as `orders.paid`, is raised by one change of `resource` that is one of `operations` (all of `insert`, `update` and `delete` when left out) and meets two [conditions](#conditions): `old` on the row before the change, where there is one, and `new` on the row after it, where there is one. Each is its own CloudEvent of that type, with the one change as its data. `orders.paid` above is a new order that is paid, or an order whose status turned paid.
+
+Under the default replica identity the WAL states only the key of the old row, so an `old` condition on any other column fails and the event is not raised. Give such a table `REPLICA IDENTITY FULL`. <gap>A named event's old condition cannot read a column outside the key under the default replica identity because looking up the old row is not implemented.</gap>
+
+### What a receiver gets
+
+Each batch is a `POST` of a JSON array of CloudEvents, `Content-Type: application/cloudevents-batch+json`, in commit order, as [Events](#events) shows them. It carries the Standard Webhooks headers:
+
+- `webhook-id`: the batch's id, the same on every try of it, so a receiver can drop a repeat. Each event keeps its own stable `id` too.
+- `webhook-timestamp`: the try's time in seconds.
+- `webhook-signature`: `v1,` and the base64 HMAC-SHA256 of `id.timestamp.body` under the secret.
+
+Any `2xx` delivers the batch, and the destination's cursor moves past it with one write to the store. A transaction the destination takes nothing from moves its cursor in memory only, so a quiet destination writes nothing.
+
+### Functions
+
+A destination with a `function` posts each batch, signed the same way, to `functions_url` and the function's name, such as `/api/functions/route-paid`. A public function checks the signature with `verifyStandardWebhook`. Its answer decides what happens:
+
+- An empty body, `null` or `[]`: the batch is dropped, and the cursor moves past it.
+- A JSON array of events: they go to the destination's `url` as the batch, under the same `webhook-id`. A destination without a `url` counts this as a failed try.
+
+Anything else, and a function that fails, is a failed try, and the next try calls the function again.
+
+### Retries
+
+A failed try is any answer outside `2xx`, or none within 30 seconds. The same batch is tried again after 5 seconds, 5 minutes, 30 minutes, 2, 5, 10, 14, 20 and 24 hours, or after the receiver's `Retry-After` when that is longer, up to a day. Retries wait in the store, so a restart picks them up with the same batch and id. A failing destination never holds back another.
+
+After its last try, a destination with `at_limit: pause` stops at the batch. One with `dead_letter` keeps the batch in the store's `dead_letters` table and goes on after it. The app resumes a paused destination with a token that names it:
+
+```http
+POST /apps/shop/destinations/orders-hook/resume
+Authorization: Bearer eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0...
+```
+
+The token holds `iss`, `exp` and `"resume": "orders-hook"`. The destination tries the same batch again, with every try back. Resuming a destination that is waiting for a retry tries it now.
+
+A destination whose cursor falls behind what the service holds in memory is `gone`: resuming it starts it again at the newest change. <gap>A destination that falls behind the in-memory tail cannot catch up because replay from the archive is not implemented.</gap>
+
+### The store
+
+The store keeps the set token in `definitions`, each destination's cursor, status (`active`, `paused` or `gone`) and failed batch in `states`, and dead letters in `dead_letters`. In the app's own database, the app reads them with SQL. <gap>The app cannot read a destination's status or dead letters through the service because a status endpoint is not implemented.</gap> <gap>Dead letters cannot be sent again because a redrive is not implemented.</gap>
+
+The store's writes are changes like any other, so they reach the stream too; a destination that does not subscribe to them passes them without a write.
 
 ## Running without it
 
