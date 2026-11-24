@@ -96,6 +96,22 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 	return f.end, nil
 }
 
+// Reset starts the feed again at from, the start of a slot created anew
+// after the old one was invalidated or dropped: the old slot's transactions
+// after what the feed holds are lost, so every position before from is gone
+// and its consumers, live ones included, resync from a snapshot. The new
+// slot starts past every position the old one gave, so its start alone tells
+// old cursors from new ones, and the cursor format needs no slot generation.
+// Once the slot is confirmed, Postgres no longer shows where it started: an
+// archive that serves positions below the floor must keep each slot's start
+// and never serve across one.
+func (f *Feed) Reset(from pglogrepl.LSN) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tail.Reset(from)
+	f.end = from
+}
+
 // Decoded marks that the stream sent every transaction committed before lsn.
 func (f *Feed) Decoded(lsn pglogrepl.LSN) {
 	f.mu.Lock()

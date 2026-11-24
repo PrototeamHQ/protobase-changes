@@ -41,6 +41,9 @@ type Sink interface {
 	// position: after what the sink already holds, so it gets no duplicates.
 	// caughtUp is where the server's WAL ended when the stream connected.
 	Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogrepl.LSN, error)
+	// Reset drops what the sink holds and starts it at from, the start of a
+	// new slot: positions before it cannot be resumed from.
+	Reset(from pglogrepl.LSN)
 	Append(tx *change.Transaction)
 	// Decoded reports that the server sent every transaction committed before lsn.
 	Decoded(lsn pglogrepl.LSN)
@@ -91,6 +94,12 @@ func (r *Reader) Run(ctx context.Context) error {
 	s, err := slot.Ensure(ctx, conn, r.app.Slot)
 	if err != nil {
 		return err
+	}
+	if s.Recreated {
+		r.log.Warn("the slot was invalidated and is created again; earlier cursors can no longer resume", "slot", s.Name, "lsn", s.Confirmed.String())
+	}
+	if s.Snapshot != "" {
+		r.sink.Reset(s.Confirmed)
 	}
 	r.Confirm(s.Confirmed)
 	if s.Snapshot != "" && r.onSnapshot != nil {

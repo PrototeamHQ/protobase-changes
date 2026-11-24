@@ -19,14 +19,19 @@ type Slot struct {
 	// Snapshot is set only when the slot was just created: it names the
 	// exported snapshot that shows the database exactly at Confirmed.
 	Snapshot string
+	// Recreated is set when Postgres had invalidated the slot, such as at
+	// max_slot_wal_keep_size, and Ensure created it again.
+	Recreated bool
 }
 
 // Ensure reuses the slot when it exists, and creates it with an exported
-// snapshot when it does not. A slot of another plugin or database is never
-// dropped, since that would lose its position: Ensure fails instead.
+// snapshot when it does not. A slot Postgres invalidated holds no position
+// any longer, so Ensure drops it and creates it again. A slot of another
+// plugin or database is never dropped, since that would lose its position:
+// Ensure fails instead.
 func Ensure(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {
 	rows, err := query(ctx, conn, fmt.Sprintf(
-		"SELECT slot_type, plugin, database = current_database(), confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = %s",
+		"SELECT slot_type, plugin, database = current_database(), confirmed_flush_lsn, wal_status FROM pg_replication_slots WHERE slot_name = %s",
 		literal(name)))
 	if err != nil {
 		return Slot{}, fmt.Errorf("read slot %s: %w", name, err)
@@ -41,11 +46,24 @@ func Ensure(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error)
 	if string(row[2]) != "t" {
 		return Slot{}, fmt.Errorf("slot %s exists on another database", name)
 	}
+	// Postgres reports every invalidation, whatever its reason, as lost.
+	if string(row[4]) == "lost" {
+		return recreate(ctx, conn, name)
+	}
 	confirmed, err := pglogrepl.ParseLSN(string(row[3]))
 	if err != nil {
 		return Slot{}, fmt.Errorf("slot %s confirmed_flush_lsn: %w", name, err)
 	}
 	return Slot{Name: name, Confirmed: confirmed}, nil
+}
+
+func recreate(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {
+	if err := Drop(ctx, conn, name); err != nil {
+		return Slot{}, err
+	}
+	s, err := create(ctx, conn, name)
+	s.Recreated = true
+	return s, err
 }
 
 func create(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {

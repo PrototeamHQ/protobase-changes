@@ -155,7 +155,7 @@ The config lists every app database to follow; unknown fields stop startup.
 
 - `listen`: the address the pull and destination endpoints serve on.
 
-- `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped.
+- `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped. A slot Postgres invalidated is created again, as [Running without it](#running-without-it) says.
 - `publication`: must exist before startup.
 - Slot and publication names are lowercase letters, digits and underscores, up to 63 characters, not starting with a digit.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
@@ -366,7 +366,9 @@ A small app that needs no webhooks, replication or history can skip protobase-ch
 - **Not configured:** reads, writes and the API work as normal, and live pages poll. Push still works: the app calls the push sender directly once the notification row commits.
 - **Unavailable without it:** webhooks, event subscriptions, replication and history. `protobase doctor` names what to run. An app that declares them gets a startup warning, not a crash.
 
-An outage that outlasts that WAL limit invalidates the slot. The service rebuilds it, and old cursors get `410` and resync.
+An outage that outlasts that WAL limit invalidates the slot. The service drops it and creates it again with a new exported snapshot, and its stream starts there: every older cursor gets `410` and resyncs, and every destination becomes `gone`. A stream open at the time ends at once, and its reconnect gets the `410`. The new slot starts past every position the old one gave, so its start alone tells old cursors from new ones.
+
+The service confirms its place only once the archive holds the WAL, so until then a finite `max_slot_wal_keep_size` also invalidates a slot that keeps up, once that much WAL of the whole server has passed the slot's start; with the default `-1`, Postgres keeps the WAL without bound. <gap>A slot that keeps up cannot stay valid under a finite max_slot_wal_keep_size because confirming the slot once the archive holds the WAL is not implemented.</gap>
 
 ## License
 

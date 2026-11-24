@@ -316,3 +316,13 @@ func TestRunAgainGoesOnAfterAStoreFailure(t *testing.T) {
 		t.Fatalf("second run ended with %v", err)
 	}
 }
+
+func TestANewSlotLeavesDestinationsGone(t *testing.T) {
+	f := newFeed(t, 100)
+	rc := newReceiver(t, ok)
+	store := newMemStore()
+	startHub(t, f, store, setToken(t, now.Unix(), hook(rc.server.URL)), "")
+	started(t, store, "orders-hook")
+	f.Reset(500)
+	eventually(t, "the destination to be gone", func() bool { s, _ := store.state("orders-hook"); return s.Status == Gone })
+}

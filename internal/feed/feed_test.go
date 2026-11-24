@@ -154,3 +154,28 @@ func TestReadyReopensWhenAReconnectFallsBehind(t *testing.T) {
 	f.Decoded(300)
 	<-f.Ready()
 }
+
+func TestResetForgetsTheOldSlot(t *testing.T) {
+	f := newFeed(t)
+	if _, err := f.Resume(epoch, 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	f.Append(tx(120))
+	changed := f.Changed()
+
+	f.Reset(500)
+	<-changed
+	if _, ok := f.Since(128); ok {
+		t.Fatal("a position of the old slot still resumes")
+	}
+	if start, err := f.Resume(epoch, 500, 500); err != nil || start != 500 {
+		t.Fatalf("resume after reset %v %v, want the new slot's start", start, err)
+	}
+	if head, err := f.Head(); err != nil || head.LSN != 500 {
+		t.Fatalf("head %+v %v, want the new slot's start", head, err)
+	}
+	f.Append(tx(520))
+	if entries, ok := f.Since(500); !ok || len(entries) != 1 {
+		t.Fatalf("since 500: %v %v", entries, ok)
+	}
+}
