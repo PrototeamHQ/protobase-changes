@@ -1,3 +1,5 @@
+//go:build integration
+
 package tests
 
 import (
@@ -5,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,6 +24,17 @@ import (
 
 type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// databaseURL fails the test when no database is named: these tests only run
+// under the integration build tag, so a missing URL is a broken setup.
+func databaseURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("PCS_TEST_DATABASE_URL")
+	if url == "" {
+		t.Fatal("PCS_TEST_DATABASE_URL is not set")
+	}
+	return url
 }
 
 func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {

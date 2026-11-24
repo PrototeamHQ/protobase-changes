@@ -1,5 +1,8 @@
+//go:build integration
+
 // Package tests runs protobase-changes against a real Postgres, named by
 // PCS_TEST_DATABASE_URL: a superuser on a server with wal_level = logical.
+// Run with: go test -tags integration ./tests/
 package tests
 
 import (
@@ -7,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"testing"
 	"time"
 
@@ -22,10 +24,7 @@ import (
 )
 
 func TestSlotReader(t *testing.T) {
-	url := os.Getenv("PCS_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("PCS_TEST_DATABASE_URL is not set")
-	}
+	url := databaseURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := connect(t, ctx, url)

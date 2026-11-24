@@ -1,3 +1,5 @@
+//go:build integration
+
 package tests
 
 import (
@@ -6,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +18,7 @@ import (
 )
 
 func TestStartupRefuses(t *testing.T) {
-	url := os.Getenv("PCS_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("PCS_TEST_DATABASE_URL is not set")
-	}
+	url := databaseURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := connect(t, ctx, url)
@@ -54,10 +52,7 @@ func TestStartupRefuses(t *testing.T) {
 }
 
 func TestFailedSnapshotDropsTheNewSlot(t *testing.T) {
-	url := os.Getenv("PCS_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("PCS_TEST_DATABASE_URL is not set")
-	}
+	url := databaseURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := connect(t, ctx, url)
