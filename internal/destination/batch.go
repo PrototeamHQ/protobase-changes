@@ -19,6 +19,8 @@ type gathered struct {
 	// end is the commit of the last transaction looked at, events or not;
 	// zero when there was none.
 	end pglogrepl.LSN
+	// seen counts the transactions looked at.
+	seen int
 }
 
 // gather looks at the entries in order and takes the destination's events
@@ -40,6 +42,7 @@ func gather(source string, d *Definition, entries []*feed.Entry, until pglogrepl
 		}
 		g.events = append(g.events, event.Named(source, entry, d.Payload, d.types)...)
 		g.end = entry.Commit()
+		g.seen++
 	}
 	return g
 }

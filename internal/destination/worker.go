@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 )
 
@@ -28,6 +29,9 @@ type worker struct {
 	// state is owned by run; others read it only after run returned. A
 	// destination without a status yet starts at the newest change.
 	state State
+	// unsaved counts the transactions the cursor passed in memory since it
+	// was last saved.
+	unsaved int
 }
 
 // run delivers until ctx ends or the store fails.
@@ -54,12 +58,7 @@ func (w *worker) run(ctx context.Context) error {
 // start waits for the feed to catch up, then places a new destination at
 // the newest change. A cursor of another epoch means nothing in this one.
 func (w *worker) start(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-w.feed.Ready():
-	}
-	head, err := w.feed.Head()
+	head, err := w.head(ctx)
 	if err != nil {
 		return err
 	}
@@ -67,10 +66,28 @@ func (w *worker) start(ctx context.Context) error {
 		w.state = State{Position: head, Status: Active}
 		return w.save(ctx)
 	}
-	if w.state.Status == Active && w.state.Position.Epoch != head.Epoch {
+	if w.state.Status != Gone && w.state.Position.Epoch != head.Epoch {
 		return w.lose(ctx)
 	}
 	return nil
+}
+
+// head returns the feed's newest position, waiting while a connection of its
+// stream has not yet caught up.
+func (w *worker) head(ctx context.Context) (cursor.Position, error) {
+	for {
+		// Taken before Head, so readiness coming in between still wakes the wait.
+		ready := w.feed.Ready()
+		head, err := w.feed.Head()
+		if !errors.Is(err, feed.ErrNotReady) {
+			return head, err
+		}
+		select {
+		case <-ctx.Done():
+			return cursor.Position{}, ctx.Err()
+		case <-ready:
+		}
+	}
 }
 
 // waitResume holds a paused or gone destination until it is resumed: a
@@ -83,7 +100,7 @@ func (w *worker) waitResume(ctx context.Context) error {
 	case <-w.resume:
 	}
 	if w.state.Status == Gone {
-		head, err := w.feed.Head()
+		head, err := w.head(ctx)
 		if err != nil {
 			return err
 		}
@@ -99,8 +116,10 @@ func (w *worker) waitResume(ctx context.Context) error {
 }
 
 // deliverNext waits for the destination's next events and tries them. The
-// cursor moves past transactions without any in memory only, so a quiet
-// destination writes nothing.
+// cursor moves past transactions without any in memory, and is saved only
+// once it passed half of what the feed holds, so a quiet destination writes
+// seldom and a restart still finds its cursor in the feed. The store's own
+// write is one transaction, so it never makes another.
 func (w *worker) deliverNext(ctx context.Context) error {
 	for {
 		// Taken before reading, so an append in between still wakes the wait.
@@ -115,6 +134,12 @@ func (w *worker) deliverNext(ctx context.Context) error {
 		}
 		if g.end != 0 {
 			w.state.Position.LSN = g.end
+			w.unsaved += g.seen
+			if w.unsaved >= max(2, w.feed.App.TailTransactions/2) {
+				if err := w.save(ctx); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		select {
@@ -218,6 +243,7 @@ func (w *worker) lose(ctx context.Context) error {
 }
 
 func (w *worker) save(ctx context.Context) error {
+	w.unsaved = 0
 	if err := w.store.PutState(ctx, w.app, w.def.Name, w.state); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
