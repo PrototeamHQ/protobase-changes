@@ -43,6 +43,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if *configPath == "" {
 		return errors.New("--config is required")
 	}
+	recreateLost, err := config.RecreateLostSlots(os.LookupEnv)
+	if err != nil {
+		return err
+	}
 
 	f, err := os.Open(*configPath)
 	if err != nil {
@@ -74,7 +78,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	err = serveAndFollow(ctx, cfg, fs, hs, log)
+	err = serveAndFollow(ctx, cfg, fs, hs, recreateLost, log)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
@@ -82,13 +86,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 }
 
 // serveAndFollow runs the readers, the destinations and the endpoints until
-// ctx ends or one of them fails, which stops the others.
-func serveAndFollow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, hs map[string]*destination.Hub, log *slog.Logger) error {
+// ctx ends or the endpoints fail, which stops the others. Readers and
+// destinations run again on their own after a failure.
+func serveAndFollow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, hs map[string]*destination.Hub, recreateLost bool, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errs := make(chan error, 3)
-	go func() { errs <- follow(ctx, cfg, fs, log) }()
-	go func() { errs <- deliver(ctx, hs) }()
+	go func() { errs <- follow(ctx, cfg, fs, recreateLost, log) }()
+	go func() { errs <- deliver(ctx, hs, log) }()
 	go func() { errs <- listen(ctx, cfg.Listen, serve.New(fs, hs).Handler()) }()
 	first := <-errs
 	cancel()

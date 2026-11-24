@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
@@ -71,4 +72,22 @@ func TestStartupWantsMigratedStores(t *testing.T) {
 	if err != nil || hs["shop"] == nil {
 		t.Fatalf("hubs after migrate: %v %v", hs, err)
 	}
+}
+
+func TestDeliverWithoutHubsRunsUntilCancelled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- deliver(ctx, nil, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("returned %v before the context ended", err)
+		default:
+		}
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("returned %v, want context.Canceled", err)
+		}
+	})
 }

@@ -56,6 +56,18 @@ func (t *Tail[T]) Raise(lsn pglogrepl.LSN) {
 	t.floor = max(t.floor, lsn)
 }
 
+// Reset drops every item and moves the floor up to lsn, waking every waiter
+// on Changed, for a stream that starts again from a new place in the WAL.
+func (t *Tail[T]) Reset(lsn pglogrepl.LSN) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	clear(t.ring)
+	t.next, t.full = 0, false
+	t.floor = max(t.floor, lsn)
+	close(t.changed)
+	t.changed = make(chan struct{})
+}
+
 // Changed returns a channel that closes on the next Append.
 func (t *Tail[T]) Changed() <-chan struct{} {
 	t.mu.Lock()

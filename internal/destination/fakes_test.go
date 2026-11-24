@@ -35,8 +35,10 @@ type memStore struct {
 	states  map[string]State
 	letters []Letter
 	writes  int
-	// failDeletes fails that many deletes before the next succeeds.
+	// failDeletes and failPuts fail that many deletes or state puts before
+	// the next succeeds.
 	failDeletes int
+	failPuts    int
 }
 
 func newMemStore() *memStore { return &memStore{raw: map[string]string{}, states: map[string]State{}} }
@@ -67,6 +69,10 @@ func (m *memStore) States(_ context.Context, _ string) (map[string]State, error)
 func (m *memStore) PutState(_ context.Context, _ string, name string, s State) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failPuts > 0 {
+		m.failPuts--
+		return errors.New("the store is down")
+	}
 	m.states[name] = copyState(s)
 	m.writes++
 	return nil

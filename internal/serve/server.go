@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/PrototeamHQ/protobase-changes/internal/destination"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/stream"
@@ -30,7 +32,9 @@ const (
 type Server struct {
 	feeds map[string]*feed.Feed
 	hubs  map[string]*destination.Hub
-	now   func() time.Time
+	// connections holds the open consumers of each app with a connections quota.
+	connections map[string]*semaphore.Weighted
+	now         func() time.Time
 	// keepalive and pollTimeout are fields so tests can shorten them.
 	keepalive   time.Duration
 	pollTimeout time.Duration
@@ -38,7 +42,16 @@ type Server struct {
 
 // New serves the feeds, and the destinations of the apps that have a hub.
 func New(feeds map[string]*feed.Feed, hubs map[string]*destination.Hub) *Server {
-	return &Server{feeds: feeds, hubs: hubs, now: time.Now, keepalive: keepalive, pollTimeout: pollTimeout}
+	connections := map[string]*semaphore.Weighted{}
+	for name, f := range feeds {
+		if quota := f.App.Quotas.Connections; quota != nil {
+			connections[name] = semaphore.NewWeighted(int64(*quota))
+		}
+	}
+	return &Server{
+		feeds: feeds, hubs: hubs, connections: connections,
+		now: time.Now, keepalive: keepalive, pollTimeout: pollTimeout,
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -61,6 +74,13 @@ func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fail(w, err)
 		return
+	}
+	if open, ok := s.connections[r.PathValue(AppParam)]; ok {
+		if !open.TryAcquire(1) {
+			fail(w, errTooManyConnections)
+			return
+		}
+		defer open.Release(1)
 	}
 
 	websocket := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")

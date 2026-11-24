@@ -21,7 +21,8 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/slot"
 )
 
-// statusInterval keeps the connection well inside the default wal_sender_timeout of 60s.
+// statusInterval keeps the connection well inside the default wal_sender_timeout
+// of 60s; a shorter timeout gets a status update every half of it.
 const statusInterval = 10 * time.Second
 
 // Snapshot is the database's initial state, exactly at the slot's first position.
@@ -41,9 +42,14 @@ type Sink interface {
 	// position: after what the sink already holds, so it gets no duplicates.
 	// caughtUp is where the server's WAL ended when the stream connected.
 	Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogrepl.LSN, error)
+	// Reset drops what the sink holds and starts it at from, the start of a
+	// new slot: positions before it cannot be resumed from.
+	Reset(from pglogrepl.LSN)
 	Append(tx *change.Transaction)
 	// Decoded reports that the server sent every transaction committed before lsn.
 	Decoded(lsn pglogrepl.LSN)
+	// Lost reports that the slot was invalidated and is not created again.
+	Lost()
 }
 
 type Reader struct {
@@ -51,6 +57,10 @@ type Reader struct {
 	sink       Sink
 	log        *slog.Logger
 	onSnapshot SnapshotHook
+	throttle   throttle
+	// RecreateLost lets Run create the slot again once Postgres invalidated
+	// it, losing the revocations in the WAL it lost; see slot.Ensure.
+	RecreateLost bool
 	// confirmed is what status updates report as flushed. It only moves through
 	// Confirm, so reading alone never lets Postgres drop WAL.
 	confirmed atomic.Uint64
@@ -61,7 +71,10 @@ type Reader struct {
 
 // New makes a reader of app into sink. onSnapshot may be nil.
 func New(app config.App, sink Sink, log *slog.Logger, onSnapshot SnapshotHook) *Reader {
-	return &Reader{app: app, sink: sink, log: log.With("app", app.Name), onSnapshot: onSnapshot}
+	return &Reader{
+		app: app, sink: sink, log: log.With("app", app.Name), onSnapshot: onSnapshot,
+		throttle: newThrottle(app.Quotas.ChangesPerSecond),
+	}
 }
 
 // Confirm lets Postgres drop the WAL up to lsn, once what it holds is stored
@@ -103,9 +116,18 @@ func (r *Reader) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s, err := slot.Ensure(ctx, conn, r.app.Slot)
+	s, err := slot.Ensure(ctx, conn, r.app.Slot, r.RecreateLost)
+	if errors.Is(err, slot.ErrLost) {
+		r.sink.Lost()
+	}
 	if err != nil {
 		return err
+	}
+	if s.Recreated {
+		r.log.Warn("the slot was invalidated and is created again; earlier cursors can no longer resume", "slot", s.Name, "lsn", s.Confirmed.String())
+	}
+	if s.Snapshot != "" {
+		r.sink.Reset(s.Confirmed)
 	}
 	r.Confirm(s.Confirmed)
 	if s.Snapshot != "" && r.onSnapshot != nil {
@@ -117,6 +139,10 @@ func (r *Reader) Run(ctx context.Context) error {
 		}
 	}
 
+	interval, err := statusEvery(ctx, conn)
+	if err != nil {
+		return err
+	}
 	start, err := r.sink.Resume(epoch, s.Confirmed, caughtUp)
 	if err != nil {
 		return err
@@ -132,7 +158,7 @@ func (r *Reader) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("start replication on slot %s: %w", s.Name, err)
 	}
-	return r.stream(ctx, conn, start)
+	return r.stream(ctx, conn, start, interval)
 }
 
 // identify returns the epoch of the database's WAL, its cluster and
@@ -147,6 +173,24 @@ func identify(ctx context.Context, conn *pgconn.PgConn) (cursor.Epoch, pglogrepl
 		return cursor.Epoch{}, 0, fmt.Errorf("identify system: system id %q: %w", sys.SystemID, err)
 	}
 	return cursor.Epoch{SystemID: id, Timeline: uint32(sys.Timeline)}, sys.XLogPos, nil
+}
+
+// statusEvery returns how often to send status updates: every statusInterval,
+// or every half of a shorter wal_sender_timeout, so the server keeps the
+// connection even while the stream reads nothing.
+func statusEvery(ctx context.Context, conn *pgconn.PgConn) (time.Duration, error) {
+	results, err := conn.Exec(ctx, "SELECT setting FROM pg_settings WHERE name = 'wal_sender_timeout'").ReadAll()
+	if err != nil {
+		return 0, fmt.Errorf("read wal_sender_timeout: %w", err)
+	}
+	ms, err := strconv.Atoi(string(results[0].Rows[0][0]))
+	if err != nil {
+		return 0, fmt.Errorf("read wal_sender_timeout: %w", err)
+	}
+	if ms <= 0 {
+		return statusInterval, nil
+	}
+	return min(statusInterval, time.Duration(ms)*time.Millisecond/2), nil
 }
 
 func connect(ctx context.Context, url string) (*pgconn.PgConn, error) {
@@ -167,15 +211,32 @@ func connect(ctx context.Context, url string) (*pgconn.PgConn, error) {
 	return conn, nil
 }
 
-func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglogrepl.LSN) error {
+func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglogrepl.LSN, interval time.Duration) error {
 	dec := decode.New(r.log)
 	nextStatus := time.Now()
+	// pending is a transaction the app's quota holds back until readOn, when
+	// the feed takes it in whole and the stream reads on.
+	var pending *change.Transaction
+	readOn := time.Now()
 	for {
 		if !time.Now().Before(nextStatus) {
 			if err := r.sendStatus(ctx, conn, received); err != nil {
 				return err
 			}
-			nextStatus = time.Now().Add(statusInterval)
+			nextStatus = time.Now().Add(interval)
+		}
+		if wait := time.Until(readOn); wait > 0 {
+			// Held back by the quota, so the server's requests for a status
+			// update go unread: the interval alone keeps the connection.
+			// Postgres keeps the WAL meanwhile.
+			if err := sleep(ctx, min(wait, time.Until(nextStatus))); err != nil {
+				return err
+			}
+			continue
+		}
+		if pending != nil {
+			r.sink.Append(pending)
+			pending = nil
 		}
 
 		recvCtx, cancel := context.WithDeadline(ctx, nextStatus)
@@ -197,9 +258,13 @@ func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglog
 		case *pgproto3.NoticeResponse:
 			// Informational, such as logical decoding progress at a verbose client_min_messages.
 		case *pgproto3.CopyData:
-			pos, reply, err := r.copyData(dec, m.Data)
+			pos, reply, tx, err := r.copyData(dec, m.Data)
 			if err != nil {
 				return err
+			}
+			if tx != nil {
+				pending = tx
+				readOn = r.throttle.take(len(tx.Changes), time.Now())
 			}
 			received = max(received, pos)
 			if reply {
@@ -212,16 +277,17 @@ func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglog
 }
 
 // copyData handles one message of the stream, returning the WAL position it
-// reaches and whether the server asked for a status update.
-func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool, error) {
+// reaches, whether the server asked for a status update and the transaction
+// it completed, if any.
+func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool, *change.Transaction, error) {
 	if len(data) == 0 {
-		return 0, false, errors.New("empty replication message")
+		return 0, false, nil, errors.New("empty replication message")
 	}
 	switch data[0] {
 	case pglogrepl.PrimaryKeepaliveMessageByteID:
 		ka, err := pglogrepl.ParsePrimaryKeepaliveMessage(data[1:])
 		if err != nil {
-			return 0, false, err
+			return 0, false, nil, err
 		}
 		// A logical walsender's keepalive carries where it has decoded and
 		// sent up to, so every transaction committed before it has come.
@@ -229,26 +295,23 @@ func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool
 		if !dec.Open() {
 			raise(&r.received, ka.ServerWALEnd)
 		}
-		return ka.ServerWALEnd, ka.ReplyRequested, nil
+		return ka.ServerWALEnd, ka.ReplyRequested, nil, nil
 	case pglogrepl.XLogDataByteID:
 		xld, err := pglogrepl.ParseXLogData(data[1:])
 		if err != nil {
-			return 0, false, err
+			return 0, false, nil, err
 		}
 		msg, err := pglogrepl.Parse(xld.WALData)
 		if err != nil {
-			return 0, false, fmt.Errorf("parse pgoutput message: %w", err)
+			return 0, false, nil, fmt.Errorf("parse pgoutput message: %w", err)
 		}
 		tx, err := dec.Decode(msg)
 		if err != nil {
-			return 0, false, err
+			return 0, false, nil, err
 		}
-		if tx != nil {
-			r.sink.Append(tx)
-		}
-		return xld.WALStart + pglogrepl.LSN(len(xld.WALData)), false, nil
+		return xld.WALStart + pglogrepl.LSN(len(xld.WALData)), false, tx, nil
 	}
-	return 0, false, fmt.Errorf("unknown replication message type %q", data[0])
+	return 0, false, nil, fmt.Errorf("unknown replication message type %q", data[0])
 }
 
 // sendStatus reports what was received, but as flushed only what Confirm allowed.
@@ -270,4 +333,16 @@ func (r *Reader) sendStatus(ctx context.Context, conn *pgconn.PgConn, received p
 		return fmt.Errorf("send status: %w", err)
 	}
 	return nil
+}
+
+// sleep waits for d, or until ctx ends.
+func sleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

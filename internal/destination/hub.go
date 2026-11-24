@@ -34,14 +34,21 @@ type Hub struct {
 	mu  sync.Mutex
 	raw string
 	set Set
-	// states holds the stored states of destinations that do not run yet,
-	// until a worker takes one or a set removes its destination.
-	states map[string]State
+	// states holds the states of destinations that do not run yet, until a
+	// worker takes one or a set removes its destination.
+	states map[string]held
 	// removed names the destinations whose stored state is still to delete.
 	removed map[string]bool
 	ctx     context.Context
 	errs    chan error
 	running map[string]*running
+}
+
+// held is a destination's state between workers: unsaved when the worker
+// that left it moved it past what the store holds.
+type held struct {
+	state   State
+	unsaved bool
 }
 
 type running struct {
@@ -70,14 +77,19 @@ func NewHub(ctx context.Context, f *feed.Feed, store Store, sender *Sender, log 
 			h.raw, h.set = raw, set
 		}
 	}
-	h.states, err = store.States(ctx, h.app.Name)
+	stored, err := store.States(ctx, h.app.Name)
 	if err != nil {
 		return nil, fmt.Errorf("app %s: store: %w", h.app.Name, err)
+	}
+	h.states = map[string]held{}
+	for name, state := range stored {
+		h.states[name] = held{state: state}
 	}
 	return h, nil
 }
 
-// Run delivers to every destination until ctx ends or the store fails.
+// Run delivers to every destination until ctx ends or the store fails. Run
+// again after a failure goes on from where each destination got to.
 func (h *Hub) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -97,9 +109,12 @@ func (h *Hub) Run(ctx context.Context) error {
 	}
 	cancel()
 	h.mu.Lock()
-	for _, r := range h.running {
+	for name, r := range h.running {
 		<-r.done
+		h.states[name] = r.w.held()
+		delete(h.running, name)
 	}
+	h.ctx = nil
 	h.mu.Unlock()
 	return err
 }
@@ -173,7 +188,7 @@ func (h *Hub) replaceLocked(set Set) {
 }
 
 // takeState hands a destination's kept state to its worker, or none.
-func (h *Hub) takeState(name string) State {
+func (h *Hub) takeState(name string) held {
 	state := h.states[name]
 	delete(h.states, name)
 	return state
@@ -196,11 +211,12 @@ func (h *Hub) Resume(name string) error {
 
 // startLocked runs a worker from state, or from the newest change when the
 // destination has none yet.
-func (h *Hub) startLocked(d *Definition, state State) {
+func (h *Hub) startLocked(d *Definition, state held) {
 	ctx, cancel := context.WithCancel(h.ctx)
 	w := &worker{
 		app: h.app.Name, source: h.app.Issuer, def: d, feed: h.feed, store: h.store, sender: h.sender,
-		delays: h.delays, now: h.now, log: h.log, resume: make(chan struct{}, 1), state: state,
+		delays: h.delays, now: h.now, log: h.log, resume: make(chan struct{}, 1), state: state.state,
+		dirty: state.unsaved,
 	}
 	r := &running{w: w, cancel: cancel, done: make(chan struct{})}
 	h.running[d.Name] = r
@@ -216,10 +232,10 @@ func (h *Hub) startLocked(d *Definition, state State) {
 }
 
 // stopLocked stops a worker and returns where it got to.
-func (h *Hub) stopLocked(name string) State {
+func (h *Hub) stopLocked(name string) held {
 	r := h.running[name]
 	r.cancel()
 	<-r.done
 	delete(h.running, name)
-	return r.w.state
+	return r.w.held()
 }
