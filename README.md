@@ -162,6 +162,7 @@ The config lists every app database to follow; unknown fields stop startup.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
 - `issuer`: the `iss` of the app's tokens, and the `source` of its events.
 - `key_files`: files that each hold one 32-byte key the app shares, base64url without padding. The first one encrypts cursors; every one opens tokens and cursors, so a new key goes first and the old one stays listed until what it sealed has expired.
+- `archive`: optional, the app's Iceberg archive below. Without it nothing confirms the slot, so Postgres keeps all WAL from the slot's start.
 - `store`: where [destinations](#destinations) and their cursors are kept, `{"kind": "postgres", "url": ...}` for a `changes` schema in that database, or `{"kind": "sqlite", "path": ...}` for a file. Without it the app has no destinations.
 - `functions_url`: where the app serves its API functions, which [function destinations](#functions) call by name.
 - `quotas`: bounds on the app's share of a process that serves many apps, each unlimited when left out:
@@ -171,6 +172,51 @@ The config lists every app database to follow; unknown fields stop startup.
 ### Many apps
 
 One process follows every app its config lists, each with its own replication connection, slot, feed and destination workers, and nothing on one app's path is shared with another. An app whose database or store fails holds back only itself: it reads or delivers again after a wait of a second, doubling up to a minute, and back to a second once it ran a minute, while the other apps go on. Startup still stops on an invalid config, an unreadable key file or a store whose schema is behind. <gap>An app whose store cannot be reached at startup stops the whole process because loading destinations after startup is not implemented.</gap>
+
+### Archive
+
+Every change becomes one row of an Iceberg table per Postgres table, committed through the app's own Iceberg catalog:
+
+```json
+"archive": {
+  "catalog": {
+    "type": "rest",
+    "url": "https://catalog.example/catalog",
+    "warehouse": "shop",
+    "credential": "client_id:client_secret",
+    "properties": { "s3.endpoint": "https://s3.example", "s3.region": "eu-1" }
+  },
+  "namespace": "shop",
+  "segment_bytes": 67108864,
+  "segment_seconds": 900,
+  "retention_hours": 168
+}
+```
+
+- `catalog`: an Iceberg REST catalog at `url`, with its `warehouse`, and an OAuth2 client `credential` or a bearer `token` when it needs one. `properties` pass on to the catalog client and its file IO as they are, such as `s3.access-key-id` and `s3.secret-access-key` when the catalog vends no storage credentials. For development, `"type": "sql"` keeps the catalog in a SQLite file at `path` and new tables at `warehouse`, a `file://` folder or an `s3://` bucket path.
+- `namespace`: the app's Iceberg namespace. It holds a namespace per Postgres schema, each with a table per Postgres table, such as `shop.public.messages`.
+- `segment_bytes`, `segment_seconds`: changes collect in memory until about `segment_bytes` of values or `segment_seconds` have passed since the first, at most 900, then go out as one Parquet file per table.
+- `retention_hours`: how long changes and table snapshots are kept, at most 2562047 (about 292 years).
+
+Each row holds `commit_lsn`, `xid`, `commit_time`, `seq` (the change's position in its transaction), `operation`, `actor` (the transaction's last `protobase_actor` message before the change), `unchanged` (the columns whose large values an update left unchanged and the WAL did not repeat), and three structs with a field per column: `key`, `old` and `new`, each null when the WAL sent no such row. A struct joins the table once a change has columns for it, as Parquet stores no empty struct. Booleans, integers, floats, bytea, dates and timestamps keep their types; every other type, such as numeric, uuid, json or time, is stored in its Postgres text format. A time stays text because Postgres allows `24:00:00`, which an Iceberg time cannot hold. <gap>A timestamp after the year 294246 stops the archive because Iceberg counts microseconds from 1970 and storing such a timestamp in another form is not implemented.</gap>
+
+Tables are partitioned by the hour of `commit_time`. Once an hour, every table of the app drops the hours that ended before its retention began, expires the snapshots older than the retention, and merges each finished hour's segment files.
+
+**Schema changes** follow the WAL in order with the rows, and fields keep their Iceberg field ids:
+
+- A new column adds a field. A dropped column keeps its field, null from then on.
+- A widening from int to bigint or from real to double precision promotes the field.
+- Any other type change moves the old field aside as `<column>__1` (or the next free number), where its values stay readable, and adds a new field. A field moved aside carries a doc that marks it retired, and no column writes to it again: when a new column takes its name, it moves aside once more.
+- A rename keeps the field id when the app announces it in the same transaction as the `ALTER TABLE`, as the WAL alone cannot tell a rename from a drop and an add:
+
+  ```sql
+  SELECT pg_logical_emit_message(true, 'protobase_schema',
+    '{"rename":{"schema":"public","table":"messages","from":"text","to":"body"}}');
+  ```
+
+  Without it, the new name becomes a new field. The renamed field's doc names the rename and its WAL position, and any other field of the new name, in any of the three structs, moves aside.
+
+**Durability:** a segment commits table by table, each in one catalog commit together with the position it reached, and the slot is confirmed only after every table of the segment committed. A schema change splits a table's commit: the rows before it commit first, then each of its schema updates in a catalog commit of its own, then the rows after it, so the rows of every commit name the fields of the schema they commit with. After a crash the service reads the unconfirmed changes again, and each table skips what it already holds, so nothing is lost or archived twice. The archive must keep up with the tail: when the tail drops a transaction the archive has not read, the service stops, and the next start reads it again from the slot. <gap>An idle app database holds the server's WAL from its last change because confirming positions past the last transaction is not implemented.</gap> <gap>Personal fields cannot be erased from the archive because per-person encryption is not implemented.</gap>
 
 ### Postgres requirements
 
@@ -195,7 +241,7 @@ Each committed transaction arrives once, in commit order, with its id, commit LS
 
 A new slot exports a snapshot of the database exactly where its stream starts; when taking it fails, the new slot is dropped so the next start takes it again. <gap>The initial state cannot reach anyone because no consumer of the exported snapshot is implemented.</gap>
 
-The service never confirms its place in the slot by reading: Postgres keeps the WAL until the archive has stored it.
+The service never confirms its place in the slot by reading: Postgres keeps the WAL until the archive has committed it.
 
 ### Logical messages
 
@@ -203,11 +249,11 @@ The app writes transactional logical messages into the WAL, in the same transact
 
 ```sql
 SELECT pg_logical_emit_message(true, 'protobase_actor', '{"sub":"u42","sid":"s9"}');
-SELECT pg_logical_emit_message(true, 'protobase_schema', '{"rename":{"table":"messages","from":"text","to":"body"}}');
+SELECT pg_logical_emit_message(true, 'protobase_schema', '{"rename":{"schema":"public","table":"messages","from":"text","to":"body"}}');
 ```
 
 - `protobase_actor`: who made the changes that follow it.
-- `protobase_schema`: a schema change, in order with the rows around it.
+- `protobase_schema`: a schema change, in order with the rows around it, such as the column rename the archive reads.
 - `protobase_revoke`: ends a session's access, as `{"sid":"s9","exp":1795480000}` with `exp` when its last token expires.
 
 The content passes on unchanged as bytes; the payloads above are examples. Messages with other prefixes are skipped. A non-transactional `protobase_` message is skipped with a warning, since it arrives even when its transaction rolls back.
@@ -259,7 +305,7 @@ The service holds the last `tail_transactions` transactions in memory, from wher
 
 ### Revocation
 
-The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. <gap>Revocations cannot outlive a restart once the archive confirms the slot because rebuilding them from the archive is not implemented.</gap>
+The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. The archive never confirms the slot past a revocation until that `exp`, so after a restart the stream reads every revocation still in force again before it serves; a far `exp` keeps the WAL from that revocation on as long.
 
 ### Answers
 

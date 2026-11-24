@@ -52,6 +52,8 @@ type Feed struct {
 	readyCh  chan struct{}
 	caughtUp pglogrepl.LSN
 	epoch    cursor.Epoch
+	// start is the slot's position the stream first started from.
+	start pglogrepl.LSN
 	// end is where the stream reached: the end of the newest transaction, or
 	// where the stream started when none came yet.
 	end pglogrepl.LSN
@@ -79,6 +81,9 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 	defer f.mu.Unlock()
 	if f.started && epoch != f.epoch {
 		return 0, fmt.Errorf("the database's system id or timeline changed from %+v to %+v", f.epoch, epoch)
+	}
+	if !f.started {
+		f.start = from
 	}
 	if !f.started || from > f.end {
 		f.tail.Raise(from)
@@ -127,7 +132,7 @@ func (f *Feed) Append(tx *change.Transaction) {
 		if m.Prefix != revoke.Prefix {
 			continue
 		}
-		if err := f.Revoked.Add(m.Content, now); err != nil {
+		if err := f.Revoked.Add(m.Content, tx.CommitLSN, now); err != nil {
 			f.log.Warn("ignored a malformed revocation", "error", err.Error(), "lsn", tx.CommitLSN.String())
 		}
 	}
@@ -176,6 +181,18 @@ func (f *Feed) Head() (cursor.Position, error) {
 // Since returns the transactions committed after lsn, oldest first. ok is
 // false when the feed no longer holds all of them.
 func (f *Feed) Since(lsn pglogrepl.LSN) ([]*Entry, bool) { return f.tail.Since(lsn) }
+
+// SinceStart returns the transactions committed after lsn, or after the
+// slot's position the stream first started from when that is later, such as
+// for a reader of everything the stream brings. It reads that start under the
+// same lock Resume sets it and raises the tail under, so a stream starting
+// meanwhile cannot make the transactions look dropped. ok is false when the
+// feed no longer holds all of them.
+func (f *Feed) SinceStart(lsn pglogrepl.LSN) ([]*Entry, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tail.Since(max(lsn, f.start))
+}
 
 // Changed returns a channel that closes when the next transaction comes in.
 func (f *Feed) Changed() <-chan struct{} { return f.tail.Changed() }

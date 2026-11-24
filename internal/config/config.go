@@ -19,6 +19,8 @@ type App struct {
 	Publication string `json:"publication"`
 	// TailTransactions bounds how many committed transactions stay in memory.
 	TailTransactions int `json:"tail_transactions"`
+	// Archive is optional: without it, nothing confirms the slot.
+	Archive *Archive `json:"archive"`
 	// Issuer is the iss every token of the app carries, and the source of its events.
 	Issuer string `json:"issuer"`
 	// KeyFiles hold the keys shared with the app: the first encrypts, every one decrypts.
@@ -117,6 +119,11 @@ func (c Config) validate() error {
 		}
 		if len(app.KeyFiles) == 0 {
 			return fmt.Errorf("config: app %q lists no key_files", app.Name)
+		}
+		if app.Archive != nil {
+			if err := app.Archive.validate(app.Name); err != nil {
+				return err
+			}
 		}
 		if err := app.Store.validate(); err != nil {
 			return fmt.Errorf("config: app %q %w", app.Name, err)

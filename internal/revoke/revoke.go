@@ -8,6 +8,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/jackc/pglogrepl"
 )
 
 // Prefix is the logical message prefix the app revokes a session with, in
@@ -18,18 +20,26 @@ const Prefix = "protobase_revoke"
 // never outgrows the sessions whose tokens are still valid. It is safe for
 // concurrent use.
 type Set struct {
-	mu    sync.Mutex
-	until map[string]time.Time
+	mu       sync.Mutex
+	sessions map[string]revocation
+}
+
+// revocation is a session's latest expiry and the commit of the message
+// that gave it.
+type revocation struct {
+	until time.Time
+	at    pglogrepl.LSN
 }
 
 func New() *Set {
-	return &Set{until: map[string]time.Time{}}
+	return &Set{sessions: map[string]revocation{}}
 }
 
 // Add revokes the session a message names, as {"sid":"s9","exp":1795480000}
-// with exp the Unix time its last token expires. It also forgets every
-// session whose tokens have all expired by now.
-func (s *Set) Add(content []byte, now time.Time) error {
+// with exp the Unix time its last token expires, in the transaction
+// committed at at. It also forgets every session whose tokens have all
+// expired by now.
+func (s *Set) Add(content []byte, at pglogrepl.LSN, now time.Time) error {
 	var m struct {
 		Sid string `json:"sid"`
 		Exp *int64 `json:"exp"`
@@ -45,28 +55,43 @@ func (s *Set) Add(content []byte, now time.Time) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for sid, until := range s.until {
-		if !until.After(now) {
-			delete(s.until, sid)
+	for sid, r := range s.sessions {
+		if !r.until.After(now) {
+			delete(s.sessions, sid)
 		}
 	}
 	until := time.Unix(*m.Exp, 0)
-	if until.After(s.until[m.Sid]) {
-		s.until[m.Sid] = until
+	if until.After(s.sessions[m.Sid].until) {
+		s.sessions[m.Sid] = revocation{until: until, at: at}
 	}
 	return nil
+}
+
+// Oldest returns the earliest commit of a revocation whose tokens may still
+// be valid: a stream that starts there reads every such revocation again.
+func (s *Set) Oldest(now time.Time) (pglogrepl.LSN, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var oldest pglogrepl.LSN
+	found := false
+	for _, r := range s.sessions {
+		if r.until.After(now) && (!found || r.at < oldest) {
+			oldest, found = r.at, true
+		}
+	}
+	return oldest, found
 }
 
 // Revoked reports whether the session was revoked and its tokens may still be valid.
 func (s *Set) Revoked(sid string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.until[sid].After(now)
+	return s.sessions[sid].until.After(now)
 }
 
 // Len is the number of sessions held, expired ones included until the next Add.
 func (s *Set) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.until)
+	return len(s.sessions)
 }

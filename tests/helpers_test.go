@@ -182,8 +182,14 @@ func confirmedFlush(t *testing.T, ctx context.Context, db *pgx.Conn, name string
 	return parsed
 }
 
+// assertChanges compares changes without their column descriptions, which
+// the decoder's unit tests cover.
 func assertChanges(t *testing.T, got, want []change.Change) {
 	t.Helper()
+	got = append([]change.Change(nil), got...)
+	for i := range got {
+		got[i].Columns = nil
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("changes\n got %+v\nwant %+v", got, want)
 	}
