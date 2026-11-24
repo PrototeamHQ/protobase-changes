@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
+	"github.com/PrototeamHQ/protobase-changes/internal/match"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
 )
 
@@ -14,8 +15,8 @@ type Data struct {
 	Changes []Change `json:"changes"`
 }
 
-// Change is one row change. A thin payload holds the resource, operation and
-// key; a raw one adds what the WAL states: the rows, the truncate options and
+// Change is one row change, sent once with every subscription of the token
+// it concerns, or once as a named event without subscriptions. A thin payload holds the resource, operation and key; a raw one adds what the WAL states: the rows, the truncate options and
 // who made the change.
 type Change struct {
 	Resource  string           `json:"resource"`
@@ -27,6 +28,7 @@ type Change struct {
 	Cascade         bool            `json:"cascade,omitempty"`
 	RestartIdentity bool            `json:"restart_identity,omitempty"`
 	Actor           json.RawMessage `json:"actor,omitempty"`
+	Subscriptions   []match.Tag     `json:"subscriptions,omitempty"`
 }
 
 // Resource names a table as tokens list it: by name in the public schema,
@@ -48,13 +50,18 @@ func data(tx *change.Transaction, tok token.Token) Data {
 	d := Data{Changes: []Change{}}
 	for i, c := range tx.Changes {
 		resource, ok := Resource(c.Table)
-		if !ok || !tok.Resources[resource] {
+		if !ok {
 			continue
 		}
-		out := Change{Resource: resource, Operation: c.Operation, Key: values(c.Key)}
+		tags := tok.Subscriptions.Match(resource, &tx.Changes[i])
+		if len(tags) == 0 {
+			continue
+		}
+		key, oldRow, newRow := visible(&tx.Changes[i], tags)
+		out := Change{Resource: resource, Operation: c.Operation, Key: values(key), Subscriptions: tags}
 		if tok.Payload == token.Raw {
-			out.OldRow = values(c.OldRow)
-			out.NewRow = values(c.NewRow)
+			out.OldRow = values(oldRow)
+			out.NewRow = values(newRow)
 			out.Cascade = c.Cascade
 			out.RestartIdentity = c.RestartIdentity
 			out.Actor = actors[i]

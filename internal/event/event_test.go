@@ -7,6 +7,7 @@ import (
 
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
+	"github.com/PrototeamHQ/protobase-changes/internal/match"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
 )
 
@@ -30,6 +31,15 @@ func entry() *feed.Entry {
 	}}
 }
 
+// readable makes a token that reads every row of the resources.
+func readable(payload token.Payload, resources ...string) token.Token {
+	subs := make([]match.Subscription, len(resources))
+	for i, r := range resources {
+		subs[i] = match.Subscription{ID: i, Resource: r}
+	}
+	return token.Token{Payload: payload, Subscriptions: match.NewIndex(subs)}
+}
+
 func encode(t *testing.T, e Event) string {
 	t.Helper()
 	b, err := json.Marshal(e)
@@ -40,28 +50,51 @@ func encode(t *testing.T, e Event) string {
 }
 
 func TestThinCarriesResourceOperationAndKey(t *testing.T) {
-	e, ok := Transaction("https://shop.example", entry(), token.Token{Payload: token.Thin, Resources: map[string]bool{"messages": true}})
+	e, ok := Transaction("https://shop.example", entry(), readable(token.Thin, "messages"))
 	if !ok {
 		t.Fatal("no event")
 	}
 	want := `{"specversion":"1.0","id":"i1","source":"https://shop.example","type":"protobase.changes.transaction",` +
 		`"time":"2026-11-24T10:00:00Z","datacontenttype":"application/json","cursor":"c1","data":{"changes":[` +
-		`{"resource":"messages","operation":"update","key":{"id":"1"}},` +
-		`{"resource":"messages","operation":"delete","key":{"id":"2"}}]}}`
+		`{"resource":"messages","operation":"update","key":{"id":"1"},"subscriptions":[{"id":0,"effect":"update"}]},` +
+		`{"resource":"messages","operation":"delete","key":{"id":"2"},"subscriptions":[{"id":0,"effect":"leave"}]}]}}`
 	if got := encode(t, e); got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
 
 func TestRawCarriesWhatTheWALStates(t *testing.T) {
-	e, ok := Transaction("s", entry(), token.Token{Payload: token.Raw, Resources: map[string]bool{"messages": true, "audit.log": true}})
+	e, ok := Transaction("s", entry(), readable(token.Raw, "messages", "audit.log"))
 	if !ok {
 		t.Fatal("no event")
 	}
 	want := `{"changes":[` +
-		`{"resource":"messages","operation":"update","key":{"id":"1"},"new":{"id":"1","note":null},"actor":{"sub":"u42"}},` +
-		`{"resource":"audit.log","operation":"insert","key":{"id":"7"},"new":{"id":"7"},"actor":{"sub":"u42"}},` +
-		`{"resource":"messages","operation":"delete","key":{"id":"2"},"old":{"id":"2"}}]}`
+		`{"resource":"messages","operation":"update","key":{"id":"1"},"new":{"id":"1","note":null},"actor":{"sub":"u42"},"subscriptions":[{"id":0,"effect":"update"}]},` +
+		`{"resource":"audit.log","operation":"insert","key":{"id":"7"},"new":{"id":"7"},"actor":{"sub":"u42"},"subscriptions":[{"id":1,"effect":"enter"}]},` +
+		`{"resource":"messages","operation":"delete","key":{"id":"2"},"old":{"id":"2"},"subscriptions":[{"id":0,"effect":"leave"}]}]}`
+	data, err := json.Marshal(e.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Fatalf("got  %s\nwant %s", data, want)
+	}
+}
+
+func TestOnlyMatchingChangesAreSentOnceForEverySubscription(t *testing.T) {
+	where, err := match.Compile(json.RawMessage(`{"eq": ["id", "1"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := token.Token{Payload: token.Thin, Subscriptions: match.NewIndex([]match.Subscription{
+		{ID: 0, Resource: "messages", Where: where}, {ID: 1, Resource: "messages", Where: where},
+	})}
+	e, ok := Transaction("s", entry(), tok)
+	if !ok {
+		t.Fatal("no event")
+	}
+	want := `{"changes":[{"resource":"messages","operation":"update","key":{"id":"1"},` +
+		`"subscriptions":[{"id":0,"effect":"update"},{"id":1,"effect":"update"}]}]}`
 	data, err := json.Marshal(e.Data)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +105,7 @@ func TestRawCarriesWhatTheWALStates(t *testing.T) {
 }
 
 func TestNoEventWithoutReadableChanges(t *testing.T) {
-	if _, ok := Transaction("s", entry(), token.Token{Payload: token.Raw, Resources: map[string]bool{"log": true}}); ok {
+	if _, ok := Transaction("s", entry(), readable(token.Raw, "log")); ok {
 		t.Fatal("made an event of a transaction the token may not read")
 	}
 }
@@ -92,7 +125,7 @@ func TestTablesWithADotAreNeverRead(t *testing.T) {
 		{Table: change.Table{Schema: "a.b", Name: "c"}, Operation: change.Insert, Key: change.Row{"id": text}},
 		{Table: change.Table{Schema: "a", Name: "b.c"}, Operation: change.Insert, Key: change.Row{"id": text}},
 	}}}
-	tok := token.Token{Payload: token.Raw, Resources: map[string]bool{"audit.log": true, "a.b.c": true}}
+	tok := readable(token.Raw, "audit.log", "a.b.c")
 	if got, ok := Transaction("s", e, tok); ok {
 		t.Fatalf("read a table whose resource names another: %+v", got.Data)
 	}

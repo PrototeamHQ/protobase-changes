@@ -39,9 +39,9 @@ func TestPullResumesByCursor(t *testing.T) {
 	f := newFeed(t, app)
 	stop := start(t, ctx, reader.New(app, f, slog.New(slog.NewTextHandler(io.Discard, nil)), nil))
 	defer stop()
-	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}).Handler())
+	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}, nil).Handler())
 	defer srv.Close()
-	tok := sealToken(t, name)
+	tok := sealToken(t, map[string]any{"resource": name})
 
 	// The consumer starts where the stream started, as from a snapshot read there.
 	waitFor(t, ctx, f, func() bool { _, err := f.Head(); return err == nil })
@@ -69,6 +69,50 @@ func TestPullResumesByCursor(t *testing.T) {
 	waitFor(t, ctx, f, func() bool { return f.Revoked.Revoked("s9", time.Now()) })
 	if _, status := pull(t, ctx, srv.URL, tok, got[1].Cursor, time.Now().Add(time.Second)); status != http.StatusUnauthorized {
 		t.Fatalf("revoked session got %d", status)
+	}
+}
+
+// TestPullMatchesConditions pulls only the rows that meet a subscription's
+// conditions from a real database, with the rows that enter and leave it.
+func TestPullMatchesConditions(t *testing.T) {
+	url := databaseURL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := connect(t, ctx, url)
+	name := fmt.Sprintf("pcs_test_%d", time.Now().UnixNano())
+	setUp(t, ctx, db, name)
+	// The old row tells whether an update left the subscription.
+	exec(t, ctx, db, fmt.Sprintf("ALTER TABLE %s REPLICA IDENTITY FULL", name))
+	app := config.App{Name: "shop", DatabaseURL: url, Slot: name, Publication: name, TailTransactions: 100, Issuer: issuer}
+	f := newFeed(t, app)
+	stop := start(t, ctx, reader.New(app, f, slog.New(slog.NewTextHandler(io.Discard, nil)), nil))
+	defer stop()
+	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}, nil).Handler())
+	defer srv.Close()
+	tok := sealToken(t, map[string]any{"resource": name, "where": map[string]any{"eq": []string{"body", "in"}}})
+
+	waitFor(t, ctx, f, func() bool { _, err := f.Head(); return err == nil })
+	head, err := f.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(t, ctx, db, fmt.Sprintf("INSERT INTO %s (id, body) VALUES (1, 'in')", name))
+	exec(t, ctx, db, fmt.Sprintf("INSERT INTO %s (id, body) VALUES (2, 'out')", name))
+	exec(t, ctx, db, fmt.Sprintf("UPDATE %s SET body = 'gone' WHERE id = 1", name))
+	exec(t, ctx, db, fmt.Sprintf("UPDATE %s SET body = 'in' WHERE id = 2", name))
+
+	var got []string
+	for _, e := range collect(t, ctx, srv.URL, tok, f.Cursors.Seal(head), 3) {
+		for _, c := range e.Data.Changes {
+			row := c.NewRow
+			if row == nil {
+				row = c.OldRow
+			}
+			got = append(got, fmt.Sprintf("%v %v %s", row["id"], row["body"], c.Subscriptions[0].Effect))
+		}
+	}
+	if want := []string{"1 in enter", "1 in leave", "2 in enter"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("pulled %v, want %v", got, want)
 	}
 }
 
@@ -122,16 +166,22 @@ func pull(t *testing.T, ctx context.Context, base, tok, after string, deadline t
 	return events, res.StatusCode
 }
 
-func sealToken(t *testing.T, table string) string {
+func sealToken(t *testing.T, subs ...map[string]any) string {
+	t.Helper()
+	return seal(t, map[string]any{
+		"iss": issuer, "sub": "u42", "sid": "s9", "exp": time.Now().Add(time.Hour).Unix(),
+		"payload": "raw", "subs": subs,
+	})
+}
+
+// seal encrypts claims under the test key, as the app makes its tokens.
+func seal(t *testing.T, claims map[string]any) string {
 	t.Helper()
 	enc, err := jose.NewEncrypter(jose.A256GCM, jose.Recipient{Algorithm: jose.DIRECT, Key: testKey}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := jwt.Encrypted(enc).Claims(map[string]any{
-		"iss": issuer, "sub": "u42", "sid": "s9", "exp": time.Now().Add(time.Hour).Unix(),
-		"payload": "raw", "subs": []map[string]any{{"resource": table}},
-	}).Serialize()
+	s, err := jwt.Encrypted(enc).Claims(claims).Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}

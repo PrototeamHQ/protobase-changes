@@ -18,6 +18,7 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/event"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
+	"github.com/PrototeamHQ/protobase-changes/internal/match"
 	"github.com/PrototeamHQ/protobase-changes/internal/revoke"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
 )
@@ -46,7 +47,7 @@ func on(f *feed.Feed, lsn pglogrepl.LSN, table string, messages ...change.Messag
 }
 
 func tok() token.Token {
-	return token.Token{Session: "s9", Expiry: time.Now().Add(time.Hour), Payload: token.Thin, Resources: map[string]bool{"messages": true}}
+	return token.Token{Session: "s9", Expiry: time.Now().Add(time.Hour), Payload: token.Thin, Subscriptions: match.NewIndex([]match.Subscription{{Resource: "messages"}})}
 }
 
 func next(t *testing.T, s *Stream, limit int) []event.Event {
