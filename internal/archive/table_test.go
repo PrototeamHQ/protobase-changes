@@ -61,7 +61,7 @@ func commitSegment(t *testing.T, cat catalog.Catalog, txs ...*change.Transaction
 	}
 }
 
-// archivedRows reads the table back as JSON rows, oldest first.
+// archivedRows reads the table back as JSON rows, in WAL order.
 func archivedRows(t *testing.T, cat catalog.Catalog) []map[string]any {
 	t.Helper()
 	ctx := context.Background()
@@ -95,7 +95,8 @@ func archivedRows(t *testing.T, cat catalog.Catalog) []map[string]any {
 func sortRows(rows []map[string]any) {
 	for i := range rows {
 		for j := i + 1; j < len(rows); j++ {
-			if rows[j]["commit_lsn"].(float64) < rows[i]["commit_lsn"].(float64) {
+			li, lj := rows[i]["commit_lsn"].(float64), rows[j]["commit_lsn"].(float64)
+			if lj < li || lj == li && rows[j]["seq"].(float64) < rows[i]["seq"].(float64) {
 				rows[i], rows[j] = rows[j], rows[i]
 			}
 		}
@@ -170,6 +171,83 @@ func TestCommitTableRenamesInPlace(t *testing.T) {
 			t.Errorf("row %d content %v, want %s: %v", i, got, want, rows[i])
 		}
 	}
+}
+
+// renameInTx is a transaction at lsn that inserts a row with body, renames
+// body to content, then inserts a row with content.
+func renameInTx(lsn uint64) *change.Transaction {
+	before := []change.Column{col("id", oidInt4, true), col("body", oidText, false)}
+	after := []change.Column{col("id", oidInt4, true), col("content", oidText, false)}
+	rename := change.Message{Prefix: schemaPrefix, Position: 1,
+		Content: []byte(`{"rename":{"schema":"public","table":"messages","from":"body","to":"content"}}`)}
+	renamed := change.Change{
+		Table: messages, Operation: change.Insert, Columns: after,
+		Key: change.Row{"id": text("2")}, NewRow: change.Row{"id": text("2"), "content": text("new")},
+	}
+	return tx(lsn, time.Now().UTC(), []change.Change{insert(before, "1", "old"), renamed}, rename)
+}
+
+// checkRenamed checks that both rows of renameInTx read under content, and
+// that the schema kept no other field for them.
+func checkRenamed(t *testing.T, cat catalog.Catalog) {
+	t.Helper()
+	rows := archivedRows(t, cat)
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows: %v", len(rows), rows)
+	}
+	for i, want := range []string{"old", "new"} {
+		if got := rows[i]["new"].(map[string]any)["content"]; got != want {
+			t.Errorf("row %d content %v, want %s: %v", i, got, want, rows[i])
+		}
+	}
+	tbl, err := cat.LoadTable(context.Background(), identifier("shop", messages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"new.body", "new.content__1"} {
+		if _, ok := tbl.Schema().FindFieldByName(name); ok {
+			t.Errorf("schema has %s: %s", name, tbl.Schema())
+		}
+	}
+}
+
+func TestCommitTableRenamesWithinATransaction(t *testing.T) {
+	cat := devCatalog(t)
+	commitSegment(t, cat, renameInTx(100))
+	checkRenamed(t, cat)
+}
+
+func TestCommitTableReplaysAfterASchemaUpdate(t *testing.T) {
+	cat := devCatalog(t)
+	ctx := context.Background()
+	x := renameInTx(100)
+	// A crash after the rename's schema update: the row before it is
+	// archived, the row after it is not.
+	var seg segment
+	seg.add(x, time.Now())
+	byTable, err := seg.tables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := byTable[messages]
+	ident := identifier("shop", messages)
+	if err := commitTable(ctx, cat, ident, events[:1]); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err := cat.LoadTable(ctx, ident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := shapeOf(tbl.Schema())
+	if n, _ := s.apply(events[1:]); n != 0 {
+		t.Fatalf("the rename changed no schema")
+	}
+	if _, err := evolve(ctx, tbl, s.ops); err != nil {
+		t.Fatal(err)
+	}
+
+	commitSegment(t, cat, x)
+	checkRenamed(t, cat)
 }
 
 func TestMaintainExpiresAndCompacts(t *testing.T) {

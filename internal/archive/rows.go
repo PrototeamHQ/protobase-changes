@@ -12,9 +12,10 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
 )
 
-// structValues are a row struct's values by field; nil is a null struct,
-// such as old when the WAL sent no old row.
-type structValues map[*field]change.Value
+// structValues are a row struct's values by the name of their field when
+// the row was made; nil is a null struct, such as old when the WAL sent no
+// old row.
+type structValues map[string]change.Value
 
 // archivedRow is one change as the archive stores it.
 type archivedRow struct {
@@ -24,30 +25,45 @@ type archivedRow struct {
 	structs [3]structValues
 }
 
-// apply evolves the shape for the events and returns the changes as rows.
-// Renames apply in their place among the changes.
-func (s *shape) apply(events []event) []archivedRow {
+// apply returns the changes of the events as rows, up to the first event
+// that changes the schema, and how many events that is. When the first event
+// changes the schema, it returns none, and s.ops holds that event's
+// operations: once they are committed, the event applies to the new schema.
+// So rows only ever name the fields of the schema they are committed with.
+func (s *shape) apply(events []event) (int, []archivedRow) {
 	var rows []archivedRow
-	for _, ev := range events {
-		if ev.rename != nil {
-			s.rename(ev.rename.From, ev.rename.To)
-			continue
+	for i, ev := range events {
+		row := s.applyOne(ev)
+		if len(s.ops) > 0 {
+			return i, rows
 		}
-		c := ev.change
-		r := archivedRow{ev: ev}
-		r.structs[0] = s.values(structKey, c.Columns, c.Key)
-		if c.OldRowKind != change.NoOldRow {
-			r.structs[1] = s.values(structOld, c.Columns, c.OldRow)
+		if row != nil {
+			rows = append(rows, *row)
 		}
-		r.structs[2] = s.values(structNew, c.Columns, c.NewRow)
-		for _, col := range c.Columns {
-			if v, ok := c.NewRow[col.Name]; ok && v.Kind == change.Unchanged {
-				r.unchanged = append(r.unchanged, col.Name)
-			}
-		}
-		rows = append(rows, r)
 	}
-	return rows
+	return len(events), rows
+}
+
+// applyOne evolves the shape for one event and returns its change as a row,
+// or nil for a rename.
+func (s *shape) applyOne(ev event) *archivedRow {
+	if ev.rename != nil {
+		s.rename(ev.rename.From, ev.rename.To)
+		return nil
+	}
+	c := ev.change
+	r := &archivedRow{ev: ev}
+	r.structs[0] = s.values(structKey, c.Columns, c.Key)
+	if c.OldRowKind != change.NoOldRow {
+		r.structs[1] = s.values(structOld, c.Columns, c.OldRow)
+	}
+	r.structs[2] = s.values(structNew, c.Columns, c.NewRow)
+	for _, col := range c.Columns {
+		if v, ok := c.NewRow[col.Name]; ok && v.Kind == change.Unchanged {
+			r.unchanged = append(r.unchanged, col.Name)
+		}
+	}
+	return r
 }
 
 // values maps a WAL row to the fields of struct name. Columns the row does
@@ -63,7 +79,7 @@ func (s *shape) values(name string, cols []change.Column, row change.Row) struct
 	vals := structValues{}
 	for col, f := range fields {
 		if v, ok := row[col]; ok {
-			vals[f] = v
+			vals[f.name] = v
 		}
 	}
 	return vals
@@ -119,12 +135,8 @@ func appendStruct(b *array.StructBuilder, st *iceberg.StructType, vals structVal
 		return nil
 	}
 	b.Append(true)
-	byName := make(map[string]change.Value, len(vals))
-	for f, v := range vals {
-		byName[f.name] = v
-	}
 	for i, f := range st.FieldList {
-		v, ok := byName[f.Name]
+		v, ok := vals[f.Name]
 		if !ok || v.Kind != change.Text {
 			b.FieldBuilder(i).AppendNull()
 			continue

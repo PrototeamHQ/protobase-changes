@@ -46,7 +46,10 @@ func (s *segment) end() pglogrepl.LSN {
 type event struct {
 	tx *change.Transaction
 	// seq is the change's position in its transaction.
-	seq    int
+	seq int
+	// step is the event's place among its transaction's messages and
+	// changes, which tells apart a rename and the change after it.
+	step   int
 	change *change.Change
 	// actor is the content of the last protobase_actor message before the change.
 	actor  *string
@@ -72,13 +75,13 @@ func (s *segment) tables() (map[change.Table][]event, error) {
 						return nil, err
 					}
 					if r != nil {
-						byTable[r.table()] = append(byTable[r.table()], event{tx: tx, seq: seq, rename: r})
+						byTable[r.table()] = append(byTable[r.table()], event{tx: tx, seq: seq, step: next + seq, rename: r})
 					}
 				}
 			}
 			if seq < len(tx.Changes) {
 				c := &tx.Changes[seq]
-				byTable[c.Table] = append(byTable[c.Table], event{tx: tx, seq: seq, change: c, actor: actor})
+				byTable[c.Table] = append(byTable[c.Table], event{tx: tx, seq: seq, step: next + seq, change: c, actor: actor})
 			}
 		}
 	}
