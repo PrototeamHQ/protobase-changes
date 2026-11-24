@@ -24,8 +24,9 @@ type Config struct {
 	Apps []App `json:"apps"`
 }
 
-// identifier matches a slot or publication name that needs no quoting.
-var identifier = regexp.MustCompile(`^[a-z0-9_]{1,63}$`)
+// identifier matches a slot or publication name that needs no quoting in a
+// replication command: it must not start with a digit, which reads as a number.
+var identifier = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
 // Parse reads a JSON config, refusing unknown fields and invalid apps.
 func Parse(r io.Reader) (Config, error) {
@@ -35,7 +36,7 @@ func Parse(r io.Reader) (Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return c, fmt.Errorf("config: %w", err)
 	}
-	if dec.More() {
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		return c, fmt.Errorf("config: unexpected data after the JSON object")
 	}
 	return c, c.validate()
@@ -58,10 +59,10 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: app %q has no database_url", app.Name)
 		}
 		if !identifier.MatchString(app.Slot) {
-			return fmt.Errorf("config: app %q slot must be 1 to 63 lowercase letters, digits or underscores", app.Name)
+			return fmt.Errorf("config: app %q slot must be 1 to 63 lowercase letters, digits or underscores, not starting with a digit", app.Name)
 		}
 		if !identifier.MatchString(app.Publication) {
-			return fmt.Errorf("config: app %q publication must be 1 to 63 lowercase letters, digits or underscores", app.Name)
+			return fmt.Errorf("config: app %q publication must be 1 to 63 lowercase letters, digits or underscores, not starting with a digit", app.Name)
 		}
 		if app.TailTransactions < 1 {
 			return fmt.Errorf("config: app %q tail_transactions must be at least 1", app.Name)

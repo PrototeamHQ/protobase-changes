@@ -18,6 +18,12 @@ func TestParseValid(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsTrailingWhitespace(t *testing.T) {
+	if _, err := Parse(strings.NewReader(valid + "\n \n")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseRefuses(t *testing.T) {
 	cases := map[string]string{
 		"unknown field": `{"apps": [], "extra": 1}`,
@@ -29,6 +35,9 @@ func TestParseRefuses(t *testing.T) {
 		"no tail":       strings.Replace(valid, `1000`, `0`, 1),
 		"twice":         `{"apps": [` + valid[10:len(valid)-2] + `, ` + valid[10:len(valid)-2] + `]}`,
 		"trailing":      valid + `{}`,
+		"trailing ]":    valid + `]`,
+		"trailing }":    valid + `}`,
+		"slot digit":    strings.Replace(valid, `"slot": "protobase_changes"`, `"slot": "123"`, 1),
 	}
 	for name, input := range cases {
 		if _, err := Parse(strings.NewReader(input)); err == nil {
