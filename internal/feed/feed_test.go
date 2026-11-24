@@ -56,20 +56,23 @@ func TestResumeStartsAfterWhatIsHeld(t *testing.T) {
 	}
 }
 
-func TestStartIsWhereTheStreamFirstStarted(t *testing.T) {
+func TestSinceStartReadsFromWhereTheStreamFirstStarted(t *testing.T) {
 	f := newFeed(t)
-	if f.Start() != 0 {
-		t.Fatalf("start %s before the stream started", f.Start())
+	if entries, ok := f.SinceStart(0); !ok || len(entries) != 0 {
+		t.Fatalf("before the stream started: %v %v", entries, ok)
 	}
 	if _, err := f.Resume(epoch, 100, 100); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := f.SinceStart(0); !ok {
+		t.Fatal("a position before the stream started looks dropped")
 	}
 	f.Append(tx(120))
 	if _, err := f.Resume(epoch, 200, 200); err != nil {
 		t.Fatal(err)
 	}
-	if f.Start() != 100 {
-		t.Fatalf("start %s, want the first resume's position", f.Start())
+	if _, ok := f.SinceStart(0); ok {
+		t.Fatal("a later start skipped over what the stream left out")
 	}
 }
 

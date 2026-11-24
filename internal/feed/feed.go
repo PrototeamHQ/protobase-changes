@@ -119,15 +119,6 @@ func (f *Feed) Append(tx *change.Transaction) {
 	f.tail.Append(&Entry{Tx: tx, Cursor: f.Cursors.Seal(at), ID: f.Cursors.ID(at)})
 }
 
-// Start returns the slot's position the stream first started from, or 0
-// before it started: the feed holds every transaction committed after it
-// until the tail drops the oldest.
-func (f *Feed) Start() pglogrepl.LSN {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.start
-}
-
 // Head returns where the stream reached, for a consumer that starts live:
 // after every transaction the feed took in so far.
 func (f *Feed) Head() (cursor.Position, error) {
@@ -142,6 +133,18 @@ func (f *Feed) Head() (cursor.Position, error) {
 // Since returns the transactions committed after lsn, oldest first. ok is
 // false when the feed no longer holds all of them.
 func (f *Feed) Since(lsn pglogrepl.LSN) ([]*Entry, bool) { return f.tail.Since(lsn) }
+
+// SinceStart returns the transactions committed after lsn, or after the
+// slot's position the stream first started from when that is later, such as
+// for a reader of everything the stream brings. It reads that start under the
+// same lock Resume sets it and raises the tail under, so a stream starting
+// meanwhile cannot make the transactions look dropped. ok is false when the
+// feed no longer holds all of them.
+func (f *Feed) SinceStart(lsn pglogrepl.LSN) ([]*Entry, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tail.Since(max(lsn, f.start))
+}
 
 // Changed returns a channel that closes when the next transaction comes in.
 func (f *Feed) Changed() <-chan struct{} { return f.tail.Changed() }

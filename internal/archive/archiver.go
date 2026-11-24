@@ -43,8 +43,7 @@ func (a *Archiver) Run(ctx context.Context) error {
 		changed := a.feed.Changed()
 		// Everything before the slot's position the stream started from is
 		// archived already, as only the archive confirms the slot.
-		read = max(read, a.feed.Start())
-		entries, ok := a.feed.Since(read)
+		entries, ok := a.feed.SinceStart(read)
 		if !ok {
 			return fmt.Errorf("archive: the tail dropped transactions after %s before they were archived", read)
 		}
