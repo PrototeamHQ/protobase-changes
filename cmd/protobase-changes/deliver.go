@@ -2,16 +2,17 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/destination"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/store"
+	"github.com/PrototeamHQ/protobase-changes/internal/supervise"
 )
 
 // stores opens the store of each app that keeps one, keyed by app name.
@@ -69,24 +70,17 @@ func hubs(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, ss m
 	return out, nil
 }
 
-// deliver runs every hub until ctx ends or the first fails, which stops the others.
-func deliver(ctx context.Context, hs map[string]*destination.Hub) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	errs := make(chan error, len(hs))
-	for _, h := range hs {
-		go func() { errs <- h.Run(ctx) }()
+// deliver runs every hub until ctx ends. A hub that fails runs again after a
+// wait, on its own, so one app's store holds back no other app.
+func deliver(ctx context.Context, hs map[string]*destination.Hub, log *slog.Logger) error {
+	var wg sync.WaitGroup
+	for app, h := range hs {
+		wg.Go(func() {
+			supervise.Run(ctx, supervise.Default, h.Run, func(err error) {
+				log.Error("delivery stopped; delivering again after a wait", "app", app, "error", err.Error())
+			})
+		})
 	}
-	var first error
-	for range hs {
-		if err := <-errs; err != nil && !errors.Is(err, context.Canceled) && first == nil {
-			first = err
-			cancel()
-		}
-	}
-	if first != nil {
-		return first
-	}
-	<-ctx.Done()
+	wg.Wait()
 	return ctx.Err()
 }

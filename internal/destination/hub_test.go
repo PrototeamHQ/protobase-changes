@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pglogrepl"
 	"testing"
@@ -278,4 +279,40 @@ func TestFallsBehindTheFeed(t *testing.T) {
 	eventually(t, "a restart from the newest change", func() bool { s, _ := store.state("orders-hook"); return s.Status == Active })
 	order(f, 140, "2", "", "open")
 	eventually(t, "the next delivery", delivered(rc, 1))
+}
+
+func TestRunAgainGoesOnAfterAStoreFailure(t *testing.T) {
+	f := newFeed(t, 100)
+	rc := newReceiver(t, ok)
+	store := newMemStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := NewHub(ctx, f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Put(ctx, setToken(t, now.Unix(), hook(rc.server.URL))); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+	started(t, store, "orders-hook")
+	store.mu.Lock()
+	store.failPuts = 1
+	store.mu.Unlock()
+	order(f, 120, "1", "", "open")
+	if err := <-done; err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("run ended with %v, want the store's failure", err)
+	}
+
+	go func() { done <- h.Run(ctx) }()
+	order(f, 130, "2", "", "open")
+	eventually(t, "the cursor past 130", func() bool { s, _ := store.state("orders-hook"); return s.Position.LSN == 130 })
+	if got := rc.requests(); len(got) != 2 {
+		t.Fatalf("%d batches, want the delivered one not sent again", len(got))
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second run ended with %v", err)
+	}
 }

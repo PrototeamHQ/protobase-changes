@@ -164,6 +164,10 @@ The config lists every app database to follow; unknown fields stop startup.
 - `store`: where [destinations](#destinations) and their cursors are kept, `{"kind": "postgres", "url": ...}` for a `changes` schema in that database, or `{"kind": "sqlite", "path": ...}` for a file. Without it the app has no destinations.
 - `functions_url`: where the app serves its API functions, which [function destinations](#functions) call by name.
 
+### Many apps
+
+One process follows every app its config lists, each with its own replication connection, slot, feed and destination workers, and nothing on one app's path is shared with another. An app whose database or store fails holds back only itself: it reads or delivers again after a wait of a second, doubling up to a minute, and back to a second once it ran a minute, while the other apps go on. Startup still stops on an invalid config, an unreadable key file or a store whose schema is behind. <gap>An app whose store cannot be reached at startup stops the whole process because loading destinations after startup is not implemented.</gap>
+
 ### Postgres requirements
 
 - `wal_level = logical`, which takes a server restart.

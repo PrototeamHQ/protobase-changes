@@ -77,7 +77,8 @@ func NewHub(ctx context.Context, f *feed.Feed, store Store, sender *Sender, log 
 	return h, nil
 }
 
-// Run delivers to every destination until ctx ends or the store fails.
+// Run delivers to every destination until ctx ends or the store fails. Run
+// again after a failure goes on from where each destination got to.
 func (h *Hub) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -97,9 +98,12 @@ func (h *Hub) Run(ctx context.Context) error {
 	}
 	cancel()
 	h.mu.Lock()
-	for _, r := range h.running {
+	for name, r := range h.running {
 		<-r.done
+		h.states[name] = r.w.state
+		delete(h.running, name)
 	}
+	h.ctx = nil
 	h.mu.Unlock()
 	return err
 }

@@ -82,13 +82,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 }
 
 // serveAndFollow runs the readers, the destinations and the endpoints until
-// ctx ends or one of them fails, which stops the others.
+// ctx ends or the endpoints fail, which stops the others. Readers and
+// destinations run again on their own after a failure.
 func serveAndFollow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, hs map[string]*destination.Hub, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errs := make(chan error, 3)
 	go func() { errs <- follow(ctx, cfg, fs, log) }()
-	go func() { errs <- deliver(ctx, hs) }()
+	go func() { errs <- deliver(ctx, hs, log) }()
 	go func() { errs <- listen(ctx, cfg.Listen, serve.New(fs, hs).Handler()) }()
 	first := <-errs
 	cancel()
