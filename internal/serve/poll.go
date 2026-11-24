@@ -3,6 +3,7 @@ package serve
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/stream"
 )
@@ -24,6 +25,10 @@ func (s *Server) poll(w http.ResponseWriter, r *http.Request, st *stream.Stream)
 	}
 	body, err := json.Marshal(events)
 	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		fail(w, err)
 		return
 	}
