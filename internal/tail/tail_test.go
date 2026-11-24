@@ -97,3 +97,27 @@ func TestResetDropsEverythingAndWakesWaiters(t *testing.T) {
 		t.Fatalf("Since(100) after an append = %v %v", got, ok)
 	}
 }
+
+func TestFloorIsTheNewestDroppedCommit(t *testing.T) {
+	tl := New[item](2)
+	tl.Raise(5)
+	tl.Append(10)
+	tl.Append(20)
+	if got := tl.Floor(); got != 5 {
+		t.Fatalf("floor %v before a drop, want the raised 5", got)
+	}
+	tl.Append(30)
+	if got := tl.Floor(); got != 10 {
+		t.Fatalf("floor %v, want the dropped 10", got)
+	}
+}
+
+func TestWakeClosesChangedWithoutAnItem(t *testing.T) {
+	tl := New[item](1)
+	ch := tl.Changed()
+	tl.Wake()
+	<-ch
+	if _, ok := tl.Newest(); ok {
+		t.Fatal("Wake added an item")
+	}
+}

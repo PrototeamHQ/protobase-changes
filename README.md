@@ -162,7 +162,7 @@ The config lists every app database to follow; unknown fields stop startup.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
 - `issuer`: the `iss` of the app's tokens, and the `source` of its events.
 - `key_files`: files that each hold one 32-byte key the app shares, base64url without padding. The first one encrypts cursors; every one opens tokens and cursors, so a new key goes first and the old one stays listed until what it sealed has expired.
-- `archive`: optional, the app's Iceberg archive below. Without it nothing confirms the slot, so Postgres keeps all WAL from the slot's start.
+- `archive`: optional, the app's Iceberg archive below. Without it the service confirms the slot itself, up to where no consumer needs the WAL any longer.
 - `store`: where [destinations](#destinations) and their cursors are kept, `{"kind": "postgres", "url": ...}` for a `changes` schema in that database, or `{"kind": "sqlite", "path": ...}` for a file. Without it the app has no destinations.
 - `functions_url`: where the app serves its API functions, which [function destinations](#functions) call by name.
 - `quotas`: bounds on the app's share of a process that serves many apps, each unlimited when left out:
@@ -242,7 +242,7 @@ Each committed transaction arrives once, in commit order, with its id, commit LS
 
 A new slot exports a snapshot of the database exactly where its stream starts; when taking it fails, the new slot is dropped so the next start takes it again. <gap>The initial state cannot reach anyone because no consumer of the exported snapshot is implemented.</gap>
 
-The service never confirms its place in the slot by reading: Postgres keeps the WAL until the archive has committed it.
+The service never confirms its place in the slot by reading alone: Postgres keeps the WAL until the archive has committed it or, for an app without an archive, until no consumer can resume from it.
 
 ### Logical messages
 
@@ -428,7 +428,7 @@ An outage that outlasts that WAL limit invalidates the slot. The service then dr
 
 Once a slot is created again, its stream starts there: every older cursor gets `410` and resyncs, and every destination becomes `gone`. A stream open at the time ends at once, and its reconnect gets the `410`. The new slot starts past every position the old one gave, so its start alone tells old cursors from new ones.
 
-The service confirms its place only once the archive holds the WAL, so until then a finite `max_slot_wal_keep_size` also invalidates a slot that keeps up, once that much WAL of the whole server has passed the slot's start; with the default `-1`, Postgres keeps the WAL without bound. <gap>A slot that keeps up cannot stay valid under a finite max_slot_wal_keep_size because confirming the slot once the archive holds the WAL is not implemented.</gap>
+With an archive, the service confirms its place once the archive holds the WAL. Without one, consumers resume only from the in-memory tail and destinations keep their cursors in the store, so the service confirms where the tail starts. Once the stream has passed a step of WAL beyond the last such move, it moves its head there, such as past the WAL other databases on the server write while the app is idle, and confirms it once every destination that delivers has stored it as its cursor. The step is a WAL segment or half of `max_slot_wal_keep_size`, whichever is smaller, read when the service starts following the app, so a slot that keeps up stays valid under a finite limit. A destination that is paused, retrying a batch or behind holds back no confirm; after a restart it is `gone` once the slot passed its stored cursor. <gap>A consumer's cursor from before the head moved cannot resume after a restart because replay from older than the in-memory tail is not implemented.</gap>
 
 ## License
 

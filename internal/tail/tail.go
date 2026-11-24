@@ -68,7 +68,24 @@ func (t *Tail[T]) Reset(lsn pglogrepl.LSN) {
 	t.changed = make(chan struct{})
 }
 
-// Changed returns a channel that closes on the next Append.
+// Wake wakes every waiter on Changed without an item, such as when the
+// position the tail is read up to moves.
+func (t *Tail[T]) Wake() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	close(t.changed)
+	t.changed = make(chan struct{})
+}
+
+// Floor returns the position from which the tail holds every item: Since
+// refuses only positions below it.
+func (t *Tail[T]) Floor() pglogrepl.LSN {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.floor
+}
+
+// Changed returns a channel that closes on the next Append or Wake.
 func (t *Tail[T]) Changed() <-chan struct{} {
 	t.mu.Lock()
 	defer t.mu.Unlock()
