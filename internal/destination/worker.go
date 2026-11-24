@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
@@ -35,6 +37,25 @@ type worker struct {
 	// dirty is whether state differs from what the store holds, such as a
 	// cursor moved in memory or a save that failed.
 	dirty bool
+	// stored is the cursor the store holds while the destination delivers,
+	// zero while unknown, or noHold while it is paused, gone or retrying a
+	// batch. Others read it at any time.
+	stored atomic.Uint64
+}
+
+// noHold marks a destination that holds back no confirm of the slot: one
+// that stopped at a batch holds it no more than one that fell behind the tail.
+const noHold = math.MaxUint64
+
+// markStored records what the store now holds as state.
+func (w *worker) markStored() { w.stored.Store(holdOf(w.state)) }
+
+// holdOf is where a destination the store holds at s holds back the confirm.
+func holdOf(s State) uint64 {
+	if s.Status != Active || s.Batch != nil {
+		return noHold
+	}
+	return uint64(s.Position.LSN)
 }
 
 // held returns where the worker got to, for the next worker of its
@@ -130,12 +151,15 @@ func (w *worker) waitResume(ctx context.Context) error {
 // deliverNext waits for the destination's next events and tries them. The
 // cursor moves past transactions without any in memory, and is saved only
 // once it passed half of what the feed holds, so a quiet destination writes
-// seldom and a restart still finds its cursor in the feed. The store's own
-// write is one transaction, so it never makes another.
+// seldom and a restart still finds its cursor in the feed. A destination
+// done with every transaction saves the head the feed advanced to, so the
+// slot can be confirmed past its cursor. The store's own write is one
+// transaction, so it never makes another.
 func (w *worker) deliverNext(ctx context.Context) error {
 	for {
 		// Taken before reading, so an append in between still wakes the wait.
 		changed := w.feed.Changed()
+		idle := w.feed.Idle()
 		entries, ok := w.feed.Since(w.state.Position.LSN)
 		if !ok {
 			return w.lose(ctx)
@@ -152,6 +176,13 @@ func (w *worker) deliverNext(ctx context.Context) error {
 				if err := w.save(ctx); err != nil {
 					return err
 				}
+			}
+			continue
+		}
+		if idle > w.state.Position.LSN {
+			w.state.Position.LSN = idle
+			if err := w.save(ctx); err != nil {
+				return err
 			}
 			continue
 		}
@@ -261,5 +292,6 @@ func (w *worker) save(ctx context.Context) error {
 		return fmt.Errorf("store: %w", err)
 	}
 	w.unsaved, w.dirty = 0, false
+	w.markStored()
 	return nil
 }

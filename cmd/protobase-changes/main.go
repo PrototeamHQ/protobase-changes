@@ -84,7 +84,7 @@ func serveAndFollow(ctx context.Context, cfg config.Config, fs map[string]*feed.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errs := make(chan error, 3)
-	go func() { errs <- follow(ctx, cfg, fs, log) }()
+	go func() { errs <- follow(ctx, cfg, fs, hs, log) }()
 	go func() { errs <- deliver(ctx, hs, log) }()
 	go func() { errs <- listen(ctx, cfg.Listen, serve.New(fs, hs).Handler()) }()
 	first := <-errs

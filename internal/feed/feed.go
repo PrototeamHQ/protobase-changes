@@ -58,6 +58,8 @@ type Feed struct {
 	// end is where the stream reached: the end of the newest transaction, or
 	// where the stream started when none came yet.
 	end pglogrepl.LSN
+	// idle is the latest position Advance moved the head to.
+	idle pglogrepl.LSN
 }
 
 func New(app config.App, ring keys.Ring, log *slog.Logger) (*Feed, error) {
@@ -227,5 +229,32 @@ func (f *Feed) SinceStart(lsn pglogrepl.LSN) ([]*Entry, bool) {
 	return f.tail.Since(max(lsn, f.start))
 }
 
-// Changed returns a channel that closes when the next transaction comes in.
+// Advance moves the head up to lsn, a position before which every committed
+// transaction is in the feed, such as one the server's keepalives report
+// while no transaction is open, and wakes the waiters on Changed. Nothing
+// committed between the newest transaction and lsn, so a consumer done with
+// the newest can go on from lsn, such as a destination storing it as its
+// cursor before the slot is confirmed past what it stored.
+func (f *Feed) Advance(lsn pglogrepl.LSN) {
+	f.mu.Lock()
+	f.idle = max(f.idle, lsn)
+	f.end = max(f.end, lsn)
+	f.mu.Unlock()
+	f.tail.Wake()
+}
+
+// Idle returns the latest position Advance moved the head to. Taken before
+// Since, it is a cursor past every transaction Since returned.
+func (f *Feed) Idle() pglogrepl.LSN {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.idle
+}
+
+// Floor returns the position from which the feed holds every transaction:
+// a cursor below it can no longer resume.
+func (f *Feed) Floor() pglogrepl.LSN { return f.tail.Floor() }
+
+// Changed returns a channel that closes when the next transaction comes in,
+// or the head advances.
 func (f *Feed) Changed() <-chan struct{} { return f.tail.Changed() }

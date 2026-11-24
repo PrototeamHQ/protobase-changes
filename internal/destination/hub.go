@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pglogrepl"
+
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 )
@@ -251,6 +253,34 @@ func (h *Hub) Resume(name string) error {
 	return nil
 }
 
+// Stored returns the lowest cursor the store holds of a destination of the
+// set that delivers, running or waiting for a run of the hub; ok is false
+// when none holds back a confirm of the slot. Until the hub loaded, and
+// while a destination starts until it saved, it holds the confirm at zero.
+func (h *Hub) Stored() (pglogrepl.LSN, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.loaded {
+		return 0, true
+	}
+	low := uint64(noHold)
+	for _, r := range h.running {
+		low = min(low, r.w.stored.Load())
+	}
+	for _, d := range h.set.Destinations {
+		state, ok := h.states[d.Name]
+		if !ok {
+			continue
+		}
+		if state.unsaved {
+			low = 0
+			continue
+		}
+		low = min(low, holdOf(state.state))
+	}
+	return pglogrepl.LSN(low), low != noHold
+}
+
 // startLocked runs a worker from state, or from the newest change when the
 // destination has none yet.
 func (h *Hub) startLocked(d *Definition, state held) {
@@ -259,6 +289,9 @@ func (h *Hub) startLocked(d *Definition, state held) {
 		app: h.app.Name, source: h.app.Issuer, def: d, feed: h.feed, store: h.store, sender: h.sender,
 		delays: h.delays, now: h.now, log: h.log, resume: make(chan struct{}, 1), state: state.state,
 		dirty: state.unsaved,
+	}
+	if state.state.Status != "" && !state.unsaved {
+		w.markStored()
 	}
 	r := &running{w: w, cancel: cancel, done: make(chan struct{})}
 	h.running[d.Name] = r

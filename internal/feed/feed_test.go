@@ -282,3 +282,46 @@ func TestLostSlotMakesTheFeedNotReadyUntilResumed(t *testing.T) {
 		t.Fatalf("head after resuming the new slot: %v", err)
 	}
 }
+
+func TestAdvanceMovesTheHeadPastTheNewestTransaction(t *testing.T) {
+	f := newFeed(t)
+	f.Resume(epoch, 100, 100)
+	f.Append(tx(120))
+	changed := f.Changed()
+	f.Advance(500)
+	<-changed
+	if head, err := f.Head(); err != nil || head.LSN != 500 || f.Idle() != 500 {
+		t.Fatalf("head %+v %v, idle %v, want both at 500", head, err, f.Idle())
+	}
+	f.Advance(300)
+	if f.Idle() != 500 {
+		t.Fatalf("idle %v, want it never to go back", f.Idle())
+	}
+	if got, ok := f.Since(500); !ok || len(got) != 0 {
+		t.Fatalf("Since(500) = %v %v, want an empty resumable cursor", got, ok)
+	}
+}
+
+// A destination may store a cursor past the slot's confirmed position, when
+// the service stopped between the two: after a restart it gets nothing until
+// a transaction that commits past its cursor.
+func TestACursorPastTheResumedHeadWaitsForALaterTransaction(t *testing.T) {
+	f := newFeed(t)
+	f.Resume(epoch, 100, 100)
+	f.Append(tx(100))
+	if got, ok := f.Since(500); !ok || len(got) != 0 {
+		t.Fatalf("Since(500) = %v %v, want nothing yet", got, ok)
+	}
+	f.Append(tx(600))
+	if got, ok := f.Since(500); !ok || len(got) != 1 || got[0].Commit() != 600 {
+		t.Fatalf("Since(500) = %v %v, want the transaction at 600", got, ok)
+	}
+}
+
+func TestFloorIsWhereTheStreamStarted(t *testing.T) {
+	f := newFeed(t)
+	f.Resume(epoch, 100, 100)
+	if got := f.Floor(); got != 100 {
+		t.Fatalf("floor %v, want the stream's start", got)
+	}
+}
