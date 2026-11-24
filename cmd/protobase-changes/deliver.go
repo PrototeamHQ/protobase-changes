@@ -38,16 +38,6 @@ func closeStores(ss map[string]*store.SQL) {
 	}
 }
 
-// migrate applies each store's schema.
-func migrate(ctx context.Context, ss map[string]*store.SQL) error {
-	for app, s := range ss {
-		if err := s.Migrate(ctx); err != nil {
-			return fmt.Errorf("app %s: %w", app, err)
-		}
-	}
-	return nil
-}
-
 // hubs returns a hub for each app that keeps a store. Each hub checks its
 // store and loads its destinations when it runs, so an app whose store is
 // behind or unreachable holds back only itself.

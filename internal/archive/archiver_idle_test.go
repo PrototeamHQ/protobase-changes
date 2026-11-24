@@ -1,7 +1,6 @@
 package archive
 
 import (
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
-	"github.com/PrototeamHQ/protobase-changes/internal/revoke"
 )
 
 // keepalives is a stream whose keepalives reached received.
@@ -56,20 +54,4 @@ func TestArchiverKeepsTheSlotAtAPendingSegment(t *testing.T) {
 	k.received.Store(500)
 	appendTx(tx(200, time.Now(), []change.Change{insert(cols, "2", "b")}))
 	noConfirm(t, k.confirmations, 300*time.Millisecond)
-}
-
-func TestArchiverHoldsAnIdleSlotAtALiveRevocation(t *testing.T) {
-	cfg := config.Archive{Namespace: "shop", SegmentBytes: 1, SegmentSeconds: 1, RetentionHours: 24}
-	k, appendTx := startIdle(t, cfg)
-	cols := []change.Column{col("id", oidInt4, true), col("body", oidText, false)}
-	exp := time.Now().Add(time.Hour).Unix()
-	revocation := change.Message{Prefix: revoke.Prefix, Content: []byte(fmt.Sprintf(`{"sid":"s9","exp":%d}`, exp))}
-	appendTx(tx(100, time.Now(), []change.Change{insert(cols, "1", "a")}, revocation))
-	if lsn := waitConfirm(t, k.confirmations, 5*time.Second); lsn != 100 {
-		t.Fatalf("confirmed %s", lsn)
-	}
-	k.received.Store(500)
-	if lsn := waitConfirm(t, k.confirmations, 5*time.Second); lsn != 100 {
-		t.Fatalf("confirmed %s past a live revocation", lsn)
-	}
 }

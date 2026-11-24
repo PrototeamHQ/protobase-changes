@@ -127,7 +127,7 @@ protobase-changes --config changes.json
 
 - **Download:** one binary or container image per GitHub release, like the relay.
 - **State:** destination cursors go in a `changes` schema in your app's database, or in a SQLite file.
-- **Updates:** `protobase-changes --config changes.json --migrate` applies the store's schema and exits. Run it at each update, before the new version starts; it applies what is missing in one transaction, so a failure leaves the store as it was. Startup never migrates: an app whose store is behind delivers nothing until it is migrated, and the other apps run.
+- **Updates:** `protobase-changes --config changes.json --migrate` applies the schema of each app database, its [revocations](#revocation) table, and of each store, then exits. Run it at each update, before the new version starts; it applies what is missing in one transaction for each app database and one for each store, also when they share a database. A failure leaves what that transaction would have changed as it was, while what an earlier transaction applied stays. Startup never migrates: an app whose database or store is behind serves or delivers nothing until it is migrated, and the other apps run.
 - **Archive:** any S3-compatible bucket or a local directory.
 
 ### Configuration
@@ -156,7 +156,7 @@ The config lists every app database to follow; unknown fields stop startup.
 
 - `listen`: the address the pull and destination endpoints serve on.
 
-- `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped. A slot Postgres invalidated stops the app's stream, unless `PCS_RECREATE_LOST_SLOTS` lets the service create it again, as [Running without it](#running-without-it) says.
+- `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped. A slot Postgres invalidated is dropped and created again, as [Running without it](#running-without-it) says.
 - `publication`: must exist before startup.
 - Slot and publication names are lowercase letters, digits and underscores, up to 63 characters, not starting with a digit.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
@@ -229,6 +229,7 @@ Tables are partitioned by the hour of `commit_time`. Once an hour, every table o
   ```
 
   Startup stops when it is missing or skips inserts, updates, deletes or truncates. Once it exists, Postgres refuses UPDATE and DELETE on a table without a primary key or another replica identity.
+- A role that may create the `changes` schema in each app database for `--migrate`. The service's role needs `USAGE` on the schema and `SELECT` on `changes.revocations` and `changes.app_migrations`, and the app's role `USAGE`, `INSERT` and `DELETE` on `changes.revocations` and `SELECT` on its `exp` column, which its expired-row delete reads. Grant them once after the first `--migrate` when they are other roles.
 - With a Postgres `store`, a role that may create the `changes` schema for `--migrate`, and read and write its tables after.
 
 ### Row changes
@@ -254,7 +255,6 @@ SELECT pg_logical_emit_message(true, 'protobase_schema', '{"rename":{"schema":"p
 
 - `protobase_actor`: who made the changes that follow it.
 - `protobase_schema`: a schema change, in order with the rows around it, such as the column rename the archive reads.
-- `protobase_revoke`: ends a session's access, as `{"sid":"s9","exp":1795480000}` with `exp` when its last token expires.
 
 The content passes on unchanged as bytes; the payloads above are examples. Messages with other prefixes are skipped. A non-transactional `protobase_` message is skipped with a warning, since it arrives even when its transaction rolls back.
 
@@ -305,7 +305,14 @@ The service holds the last `tail_transactions` transactions in memory, from wher
 
 ### Revocation
 
-The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. The archive never confirms the slot past a revocation until that `exp`, so after a restart the stream reads every revocation still in force again before it serves; a far `exp` keeps the WAL from that revocation on as long. A slot Postgres invalidated loses the WAL with its revocations, as [Running without it](#running-without-it) says.
+The app revokes a session with a row in `changes.revocations`, in the transaction that ends it, with `exp` the Unix time the session's last token expires:
+
+```sql
+DELETE FROM changes.revocations WHERE exp <= extract(epoch FROM now());
+INSERT INTO changes.revocations (sid, exp) VALUES ('s9', 1795480000);
+```
+
+A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until its `exp`. Only an insert revokes: updating or deleting a row lifts nothing. The app deletes the rows whose `exp` has passed, such as in the same transaction as above, so the table holds only revocations in force. Before a stream serves, it reads every revocation still in force from the table, inside a new slot's exported snapshot or, for a slot it reuses, as the table stands then, and the WAL brings the ones after. So a restart, or a slot that lost its WAL, still knows every revocation, and the slot never keeps WAL for one. An app database without the table answers `503` until `--migrate` has run.
 
 ### Answers
 
@@ -314,7 +321,7 @@ The app revokes a session with a `protobase_revoke` message in the transaction t
 - `404`: no app of that name.
 - `410`: the cursor can no longer resume.
 - `429`: the app has as many open connections as its `connections` quota allows.
-- `503`: the app's stream has not yet read all the WAL there was when it connected, or its slot was invalidated, so revocations in it may still be unknown.
+- `503`: the app's stream has not yet read its revocations and all the WAL there was when it connected, so revocations may still be unknown.
 
 ## Destinations
 
@@ -417,9 +424,7 @@ A small app that needs no webhooks, replication or history can skip protobase-ch
 - **Not configured:** reads, writes and the API work as normal, and live pages poll. Push still works: the app calls the push sender directly once the notification row commits.
 - **Unavailable without it:** webhooks, event subscriptions, replication and history. `protobase doctor` names what to run. An app that declares them gets a startup warning, not a crash.
 
-An outage that outlasts that WAL limit invalidates the slot. The app's stream then stops and the app answers `503`, while the other apps go on. The WAL the slot lost may hold revocations the service never read, so a new slot alone would let a revoked session's token stream again until it expires. To recover, first make every token issued before the loss invalid: list a new key first in the app's `key_files`, drop the old ones, and put the destinations again under the new key; or wait until the longest-lived token issued before the loss has expired. Then drop the slot, and the service creates it again with a new exported snapshot.
-
-With the environment variable `PCS_RECREATE_LOST_SLOTS=true` (`true` or `false`, default `false`), the service drops an invalidated slot and creates it again on its own, and revocations in the lost WAL go unread: the promise of [Revocation](#revocation) does not hold for sessions revoked there, whose tokens can stream from the new slot until they expire. <gap>A slot Postgres invalidated cannot be created again safely without manual work because keeping revocations beyond the WAL is not implemented.</gap>
+An outage that outlasts that WAL limit invalidates the slot. The service then drops it and creates it again with a new exported snapshot, while the other apps go on. The changes in the WAL the slot lost are gone, but its revocations are not: the new stream reads them from the [revocations](#revocation) table before it serves.
 
 Once a slot is created again, its stream starts there: every older cursor gets `410` and resyncs, and every destination becomes `gone`. A stream open at the time ends at once, and its reconnect gets the `410`. The new slot starts past every position the old one gave, so its start alone tells old cursors from new ones.
 

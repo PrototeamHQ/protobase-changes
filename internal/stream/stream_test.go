@@ -39,11 +39,18 @@ func newFeed(t *testing.T, size int) *feed.Feed {
 }
 
 // on appends a transaction of one insert into table at lsn.
-func on(f *feed.Feed, lsn pglogrepl.LSN, table string, messages ...change.Message) {
-	f.Append(&change.Transaction{CommitLSN: lsn, EndLSN: lsn + 8, Messages: messages, Changes: []change.Change{
+func on(f *feed.Feed, lsn pglogrepl.LSN, table string, more ...change.Change) {
+	f.Append(&change.Transaction{CommitLSN: lsn, EndLSN: lsn + 8, Changes: append([]change.Change{
 		{Table: change.Table{Schema: "public", Name: table}, Operation: change.Insert,
 			Key: change.Row{"id": {Kind: change.Text, Text: strconv.Itoa(int(lsn))}}},
-	}})
+	}, more...)})
+}
+
+// revocation is the app's insert into revoke.Table that revokes sid for an hour.
+func revocation(sid string) change.Change {
+	exp := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	return change.Change{Table: revoke.Table, Operation: change.Insert,
+		NewRow: change.Row{"sid": {Kind: change.Text, Text: sid}, "exp": {Kind: change.Text, Text: exp}}}
 }
 
 func tok() token.Token {
@@ -224,8 +231,7 @@ func TestRevocationStopsBeforeItsTransaction(t *testing.T) {
 	if got := next(t, s, 100); len(got) != 1 {
 		t.Fatalf("before the revocation %v", types(got))
 	}
-	exp := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
-	on(f, 120, "messages", change.Message{Prefix: revoke.Prefix, Content: []byte(`{"sid":"s9","exp":` + exp + `}`)})
+	on(f, 120, "messages", revocation("s9"))
 	if _, err := s.Next(context.Background(), time.Minute, 100); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("got %v, want ErrRevoked", err)
 	}

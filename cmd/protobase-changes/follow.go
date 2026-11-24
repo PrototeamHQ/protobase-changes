@@ -36,7 +36,7 @@ func feeds(cfg config.Config, log *slog.Logger) (map[string]*feed.Feed, error) {
 // its own, so one app's database holds back no other app. An archiver that
 // fails stops the others and returns its error: only a fresh start reads the
 // changes it had not archived again from the slot.
-func follow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, recreateLost bool, log *slog.Logger) error {
+func follow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -45,7 +45,6 @@ func follow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, re
 	for _, app := range cfg.Apps {
 		f := fs[app.Name]
 		r := reader.New(app, f, log, nil)
-		r.RecreateLost = recreateLost
 		readers = append(readers, r)
 		if app.Archive == nil {
 			continue

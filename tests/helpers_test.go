@@ -25,6 +25,7 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
+	"github.com/PrototeamHQ/protobase-changes/internal/revoke"
 )
 
 type execer interface {
@@ -59,9 +60,10 @@ func exec(t *testing.T, ctx context.Context, db execer, sql string) {
 	}
 }
 
-// setUp makes a table and a publication of all tables, both named name, and
-// removes them and the slot of that name afterwards.
+// setUp migrates the app database, makes a table and a publication of all
+// tables, both named name, and removes them and the slot of that name afterwards.
 func setUp(t *testing.T, ctx context.Context, db *pgx.Conn, name string) {
+	migrateApp(t, ctx, db)
 	exec(t, ctx, db, fmt.Sprintf("CREATE TABLE %s (id int PRIMARY KEY, body text)", name))
 	exec(t, ctx, db, fmt.Sprintf("CREATE PUBLICATION %s FOR ALL TABLES", name))
 	t.Cleanup(func() {
@@ -71,6 +73,24 @@ func setUp(t *testing.T, ctx context.Context, db *pgx.Conn, name string) {
 		exec(t, ctx, db, "DROP PUBLICATION "+name)
 		exec(t, ctx, db, "DROP TABLE "+name)
 	})
+}
+
+// migrateApp applies the app database's part of the changes schema.
+func migrateApp(t *testing.T, ctx context.Context, db *pgx.Conn) {
+	t.Helper()
+	if err := revoke.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// revocation returns the app's insert that revokes sid for an hour. The
+// table outlives the test, so the row goes when the test ends.
+func revocation(t *testing.T, db *pgx.Conn, sid string) string {
+	t.Helper()
+	t.Cleanup(func() {
+		exec(t, context.Background(), db, fmt.Sprintf("DELETE FROM changes.revocations WHERE sid = '%s'", sid))
+	})
+	return fmt.Sprintf("INSERT INTO changes.revocations (sid, exp) VALUES ('%s', %d)", sid, time.Now().Add(time.Hour).Unix())
 }
 
 // start runs the reader until the returned stop is called, failing the test

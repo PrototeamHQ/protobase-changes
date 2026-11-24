@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -18,15 +20,15 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
-	"github.com/PrototeamHQ/protobase-changes/internal/slot"
-	"github.com/PrototeamHQ/protobase-changes/internal/stream"
+	"github.com/PrototeamHQ/protobase-changes/internal/serve"
 	"github.com/PrototeamHQ/protobase-changes/internal/supervise"
-	"github.com/PrototeamHQ/protobase-changes/internal/token"
 )
 
 // TestInvalidatedSlotIsCreatedAgain lets Postgres invalidate the slot at
-// max_slot_wal_keep_size while the reader streams from it: a reader that may
-// not create it again fails with slot.ErrLost, and one that may creates it.
+// max_slot_wal_keep_size, past a revocation committed while the service was
+// down, so the WAL that held it is gone. The restarted service creates the
+// slot again and still refuses the revoked session, from the table the app
+// wrote it to, while a fresh session streams.
 func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 	url := databaseURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -34,21 +36,23 @@ func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 	db := connect(t, ctx, url)
 	name := fmt.Sprintf("pcs_test_%d", time.Now().UnixNano())
 	setUp(t, ctx, db, name)
-	app := config.App{Name: "test", DatabaseURL: url, Slot: name, Publication: name, TailTransactions: 1000}
-	f := newFeed(t, app)
+	app := config.App{Name: "shop", DatabaseURL: url, Slot: name, Publication: name, TailTransactions: 1000, Issuer: issuer}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	old := newFeed(t, app)
 
-	failures := make(chan error, 100)
-	stop := supervised(ctx, reader.New(app, f, log, nil), failures)
-	t.Cleanup(func() { stop() })
-
-	waitFor(t, ctx, f, func() bool { _, err := f.Head(); return err == nil })
+	stop := supervised(ctx, reader.New(app, old, log, nil), nil)
+	waitFor(t, ctx, old, func() bool { _, err := old.Head(); return err == nil })
 	oldSlot := confirmedFlush(t, ctx, db, name)
 	exec(t, ctx, db, fmt.Sprintf("INSERT INTO %s (id, body) VALUES (1, 'old')", name))
-	waitFor(t, ctx, f, func() bool { return len(mine(t, f, name, oldSlot)) == 1 })
-	old, _ := f.Since(oldSlot)
-	oldCursor := old[len(old)-1].Cursor
+	waitFor(t, ctx, old, func() bool { return len(mine(t, old, name, oldSlot)) == 1 })
+	held, _ := old.Since(oldSlot)
+	oldCursor := held[len(held)-1].Cursor
+	stop()
+	waitInactive(t, ctx, db, name)
 
+	revoked, fresh := name+"_revoked", name+"_fresh"
+	exec(t, ctx, db, revocation(t, db, revoked))
+	revokedAt := currentLSN(t, ctx, db)
 	exec(t, ctx, db, "ALTER SYSTEM SET max_slot_wal_keep_size = '1MB'")
 	exec(t, ctx, db, "SELECT pg_reload_conf()")
 	keepAll := func(ctx context.Context) {
@@ -56,47 +60,49 @@ func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 		exec(t, ctx, db, "SELECT pg_reload_conf()")
 	}
 	t.Cleanup(func() { keepAll(context.Background()) })
-	fillUntil(t, ctx, db, "the reader to find the slot lost", func() bool {
-		for {
-			select {
-			case err := <-failures:
-				if errors.Is(err, slot.ErrLost) {
-					return true
-				}
-			default:
-				return false
-			}
-		}
-	})
-	stop()
-	// The revocations in the lost WAL are unknown, so the app answers 503.
-	if _, err := f.Head(); !errors.Is(err, feed.ErrNotReady) {
-		t.Fatalf("head with the slot lost: %v, want feed.ErrNotReady", err)
-	}
-
-	r := reader.New(app, f, log, nil)
-	r.RecreateLost = true
-	stop = supervised(ctx, r, nil)
 	// Each round fills a WAL segment of its own, which the next checkpoint
 	// removes past the 1MB the slot may keep.
-	tok := token.Token{Expiry: time.Now().Add(time.Hour)}
-	fillUntil(t, ctx, db, "the old cursor to be gone", func() bool {
-		_, err := stream.Open(f, tok, oldCursor, time.Now)
-		return errors.Is(err, stream.ErrGone)
+	fillUntil(t, ctx, db, "Postgres to invalidate the slot", func() bool {
+		var lost bool
+		if err := db.QueryRow(ctx, "SELECT wal_status = 'lost' FROM pg_replication_slots WHERE slot_name = $1", name).Scan(&lost); err != nil {
+			t.Fatal(err)
+		}
+		return lost
 	})
-
-	// The rounds may have invalidated the new slot too, so it may be created
-	// once more: wait for one that holds its WAL.
 	keepAll(ctx)
+
+	// A restart: the new feed knows no revocation from memory.
+	f := newFeed(t, app)
+	stop = supervised(ctx, reader.New(app, f, log, nil), nil)
+	t.Cleanup(func() { stop() })
 	newSlot := keptSlot(t, ctx, db, name)
-	if newSlot <= oldSlot {
-		t.Fatalf("the slot starts at %s, want past the invalidated one at %s", newSlot, oldSlot)
+	if newSlot <= revokedAt {
+		t.Fatalf("the slot starts at %s, want past the revocation at %s", newSlot, revokedAt)
+	}
+	waitFor(t, ctx, f, func() bool { _, err := f.Head(); return err == nil })
+
+	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}, nil).Handler())
+	defer srv.Close()
+	token := func(sid string) string {
+		return seal(t, map[string]any{
+			"iss": issuer, "sub": "u42", "sid": sid, "exp": time.Now().Add(time.Hour).Unix(),
+			"payload": "raw", "subs": []map[string]any{{"resource": name}},
+		})
+	}
+	if _, status := pull(t, ctx, srv.URL, token(revoked), "", time.Now().Add(5*time.Second)); status != http.StatusUnauthorized {
+		t.Fatalf("the revoked session got %d on the new slot, want 401", status)
+	}
+	if _, status := pull(t, ctx, srv.URL, token(fresh), oldCursor, time.Now().Add(5*time.Second)); status != http.StatusGone {
+		t.Fatalf("a cursor of the invalidated slot got %d, want 410", status)
+	}
+	head, err := f.Head()
+	if err != nil {
+		t.Fatal(err)
 	}
 	exec(t, ctx, db, fmt.Sprintf("INSERT INTO %s (id, body) VALUES (2, 'new')", name))
-	waitFor(t, ctx, f, func() bool { return len(mine(t, f, name, newSlot)) == 1 })
-	got := mine(t, f, name, newSlot)[0].Changes[0].NewRow["body"]
-	if got != text("new") {
-		t.Fatalf("the new slot streamed %+v, want the new row", got)
+	got := collect(t, ctx, srv.URL, token(fresh), f.Cursors.Seal(head), 1)
+	if body := got[0].Data.Changes[0].NewRow["body"]; body != "new" {
+		t.Fatalf("the fresh session got %+v, want the new row", body)
 	}
 }
 
@@ -144,7 +150,7 @@ func keptSlot(t *testing.T, ctx context.Context, db *pgx.Conn, name string) pglo
 	t.Helper()
 	for {
 		var lsn string
-		err := db.QueryRow(ctx, "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1 AND wal_status <> 'lost'", name).Scan(&lsn)
+		err := db.QueryRow(ctx, "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1 AND wal_status <> 'lost' AND confirmed_flush_lsn IS NOT NULL", name).Scan(&lsn)
 		if err == nil {
 			parsed, err := pglogrepl.ParseLSN(lsn)
 			if err != nil {

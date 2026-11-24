@@ -62,11 +62,18 @@ func newFixtureWith(t *testing.T, quotas config.Quotas) fixture {
 }
 
 // insert appends a transaction of one insert into messages at lsn.
-func (fx fixture) insert(lsn pglogrepl.LSN, messages ...change.Message) {
-	fx.feed.Append(&change.Transaction{CommitLSN: lsn, EndLSN: lsn + 8, Messages: messages, Changes: []change.Change{
+func (fx fixture) insert(lsn pglogrepl.LSN, more ...change.Change) {
+	fx.feed.Append(&change.Transaction{CommitLSN: lsn, EndLSN: lsn + 8, Changes: append([]change.Change{
 		{Table: change.Table{Schema: "public", Name: "messages"}, Operation: change.Insert,
 			Key: change.Row{"id": {Kind: change.Text, Text: strconv.Itoa(int(lsn))}}},
-	}})
+	}, more...)})
+}
+
+// revocation is the app's insert into revoke.Table that revokes sid for an hour.
+func revocation(sid string) change.Change {
+	exp := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	return change.Change{Table: revoke.Table, Operation: change.Insert,
+		NewRow: change.Row{"sid": {Kind: change.Text, Text: sid}, "exp": {Kind: change.Text, Text: exp}}}
 }
 
 func (fx fixture) cursor(lsn pglogrepl.LSN) string {
@@ -201,8 +208,7 @@ func TestRefusals(t *testing.T) {
 
 func TestRevokedSessionIsRefused(t *testing.T) {
 	fx := newFixture(t)
-	exp := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
-	fx.insert(110, change.Message{Prefix: revoke.Prefix, Content: []byte(`{"sid":"s9","exp":` + exp + `}`)})
+	fx.insert(110, revocation("s9"))
 	if res := get(t, fx.url+ChangesPath("shop", fx.cursor(100)), seal(t, claims(nil)), nil); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("revoked session got %d", res.StatusCode)
 	}
@@ -288,8 +294,7 @@ func TestWebSocketStreamsUntilRevoked(t *testing.T) {
 	if e := read(); e.Data == nil || e.Data.Changes[0].Key["id"] != "110" {
 		t.Fatalf("replayed %+v", e)
 	}
-	exp := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
-	fx.insert(120, change.Message{Prefix: revoke.Prefix, Content: []byte(`{"sid":"s9","exp":` + exp + `}`)})
+	fx.insert(120, revocation("s9"))
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
