@@ -61,8 +61,10 @@ func TestAnUnmigratedStoreHoldsBackOnlyItsHub(t *testing.T) {
 	}
 	defer closeStores(ss)
 
-	// The app databases --migrate applies first need Postgres; the
-	// integration tests cover them.
+	// This test is about the hub: it migrates only the store. The command's
+	// --migrate path migrates each app's Postgres database first, which these
+	// unit tests have none of, so tests/migrate_test.go (TestMigrateFlag)
+	// runs the built command with --migrate against real Postgres instead.
 	if err := migrateStores(ctx, ss); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
