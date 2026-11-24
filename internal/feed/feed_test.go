@@ -175,7 +175,7 @@ func TestReadyReopensWhenAReconnectFallsBehind(t *testing.T) {
 	<-f.Ready()
 }
 
-func TestResetOfTheFirstSlotDropsNothing(t *testing.T) {
+func TestSinceStartGoesOnFromANewSlot(t *testing.T) {
 	f := newFeed(t)
 	f.Reset(100)
 	if _, ok := f.SinceStart(0); !ok {
@@ -186,8 +186,12 @@ func TestResetOfTheFirstSlotDropsNothing(t *testing.T) {
 	}
 	f.Append(tx(120))
 	f.Reset(500)
-	if _, ok := f.SinceStart(128); ok {
-		t.Fatal("a reset after the stream started skipped over what it dropped")
+	f.Append(tx(520))
+	if entries, ok := f.SinceStart(128); !ok || len(entries) != 1 || entries[0].Tx.CommitLSN != 520 {
+		t.Fatalf("since 128 after a new slot at 500: %v %v, want the new slot's transaction", entries, ok)
+	}
+	if _, ok := f.Since(128); ok {
+		t.Fatal("a cursor of the old slot still resumes")
 	}
 }
 

@@ -124,6 +124,26 @@ func TestArchiverStartsAtTheSlotPosition(t *testing.T) {
 	}
 }
 
+// A slot created anew after Postgres invalidated the old one starts past WAL
+// that is gone for good, so archiving goes on from it.
+func TestArchiverGoesOnFromANewSlot(t *testing.T) {
+	cfg := config.Archive{Namespace: "shop", SegmentBytes: 1, SegmentSeconds: 900, RetentionHours: 24}
+	f, confirmed, _ := startArchiver(t, cfg)
+	if _, err := f.Resume(cursor.Epoch{SystemID: 1, Timeline: 1}, 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	cols := []change.Column{col("id", oidInt4, true), col("body", oidText, false)}
+	f.Append(tx(200, time.Now(), []change.Change{insert(cols, "1", "a")}))
+	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 201 {
+		t.Fatalf("confirmed %s", lsn)
+	}
+	f.Reset(500)
+	f.Append(tx(600, time.Now(), []change.Change{insert(cols, "2", "b")}))
+	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 601 {
+		t.Fatalf("confirmed %s after the new slot, want 0/259", lsn)
+	}
+}
+
 func TestArchiverFailsWhenTheTailDropsUnarchivedTransactions(t *testing.T) {
 	cat := devCatalog(t)
 	tl := newFeed(t, 1)

@@ -52,7 +52,8 @@ type Feed struct {
 	readyCh  chan struct{}
 	caughtUp pglogrepl.LSN
 	epoch    cursor.Epoch
-	// start is the slot's position the stream first started from.
+	// start is the slot's position the stream first started from, or the
+	// start of the slot created anew since.
 	start pglogrepl.LSN
 	// end is where the stream reached: the end of the newest transaction, or
 	// where the stream started when none came yet.
@@ -109,16 +110,13 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 // old cursors from new ones, and the cursor format needs no slot generation.
 // Once the slot is confirmed, Postgres no longer shows where it started: an
 // archive that serves positions below the floor must keep each slot's start
-// and never serve across one. A slot created before the stream first started
-// is where it starts, so a reader of everything the stream brings, such as
-// the archive, finds nothing dropped; after that, a reset drops what it had
-// not read.
+// and never serve across one. A reader of everything the stream brings, such
+// as the archive, goes on from the new slot's start: the WAL between is gone
+// for good, and a fresh start would begin at the same place.
 func (f *Feed) Reset(from pglogrepl.LSN) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.started {
-		f.start = from
-	}
+	f.start = from
 	f.tail.Reset(from)
 	f.end = from
 }
@@ -189,7 +187,8 @@ func (f *Feed) Head() (cursor.Position, error) {
 func (f *Feed) Since(lsn pglogrepl.LSN) ([]*Entry, bool) { return f.tail.Since(lsn) }
 
 // SinceStart returns the transactions committed after lsn, or after the
-// slot's position the stream first started from when that is later, such as
+// slot's position the stream first started from, or the new slot's start
+// after a Reset, when that is later, such as
 // for a reader of everything the stream brings. It reads that start under the
 // same lock Resume sets it and raises the tail under, so a stream starting
 // meanwhile cannot make the transactions look dropped. ok is false when the
