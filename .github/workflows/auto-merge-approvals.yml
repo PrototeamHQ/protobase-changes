@@ -21,16 +21,17 @@ on:
     types: [completed]
   status:
 
-# Merging and deleting the branch take contents: write.
-permissions:
-  actions: read
-  checks: read
-  contents: write
-  pull-requests: write
-  statuses: read
+permissions: {}
 
 jobs:
   merge:
+    # Merging and deleting the branch take contents: write.
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      pull-requests: write
+      statuses: read
     # Adding another label runs nothing.
     if: github.event.action != 'labeled' || github.event.label.name == 'auto-merge-approvals'
-    uses: protobase-community/.github/.github/workflows/auto-merge-approvals.yml@main
+    uses: protobase-community/.github/.github/workflows/auto-merge-approvals.yml@main # zizmor: ignore[unpinned-uses] main is the reviewed version

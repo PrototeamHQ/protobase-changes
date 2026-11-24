@@ -10,13 +10,14 @@ on:
   pull_request_review:
     types: [submitted]
 
-permissions:
-  checks: read
-  contents: read
-  pull-requests: write
+permissions: {}
 
 jobs:
   follow-up:
+    permissions:
+      checks: read
+      contents: read
+      pull-requests: write
     uses: PrototeamHQ/coderabbit/.github/workflows/follow-up.yml@main # zizmor: ignore[unpinned-uses] main is the reviewed version
     secrets:
       SCW_PR_REVIEW_SECRET_KEY: ${{ secrets.SCW_PR_REVIEW_SECRET_KEY }}

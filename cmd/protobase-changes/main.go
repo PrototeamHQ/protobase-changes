@@ -11,9 +11,12 @@ import (
 var version = "dev"
 
 func main() {
-	printVersion(os.Stdout)
+	if err := printVersion(os.Stdout); err != nil {
+		os.Exit(1)
+	}
 }
 
-func printVersion(w io.Writer) {
-	fmt.Fprintln(w, version)
+func printVersion(w io.Writer) error {
+	_, err := fmt.Fprintln(w, version)
+	return err
 }
