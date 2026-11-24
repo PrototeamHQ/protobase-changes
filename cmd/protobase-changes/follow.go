@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PrototeamHQ/protobase-changes/internal/archive"
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
@@ -28,18 +29,38 @@ func feeds(cfg config.Config, log *slog.Logger) (map[string]*feed.Feed, error) {
 	return out, nil
 }
 
-// follow runs one reader per app into its feed until ctx ends or the first
-// reader fails, which stops the others.
+// job is one long-running part of the service, such as an app's reader.
+type job struct {
+	name string
+	run  func(context.Context) error
+}
+
+// follow runs a reader per app into its feed, and an archiver per app with an
+// archive, until ctx ends or the first job fails, which stops the others.
 func follow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	errs := make(chan error, len(cfg.Apps))
+	var jobs []job
 	for _, app := range cfg.Apps {
-		r := reader.New(app, fs[app.Name], log, nil)
+		f := fs[app.Name]
+		r := reader.New(app, f, log, nil)
+		jobs = append(jobs, job{"app " + app.Name, r.Run})
+		if app.Archive == nil {
+			continue
+		}
+		cat, err := archive.Open(ctx, app.Name, app.Archive.Catalog)
+		if err != nil {
+			return fmt.Errorf("app %s: %w", app.Name, err)
+		}
+		jobs = append(jobs, job{"app " + app.Name + " archive", archive.New(*app.Archive, cat, f, r).Run})
+	}
+
+	errs := make(chan error, len(jobs))
+	for _, j := range jobs {
 		go func() {
-			if err := r.Run(ctx); err != nil {
-				errs <- fmt.Errorf("app %s: %w", app.Name, err)
+			if err := j.run(ctx); err != nil {
+				errs <- fmt.Errorf("%s: %w", j.name, err)
 				return
 			}
 			errs <- nil
@@ -47,7 +68,7 @@ func follow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, lo
 	}
 
 	var first error
-	for range cfg.Apps {
+	for range jobs {
 		if err := <-errs; err != nil && first == nil {
 			first = err
 			cancel()

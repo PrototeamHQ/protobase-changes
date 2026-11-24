@@ -22,6 +22,9 @@ jobs:
         run: |
           docker run -d --name postgres -e POSTGRES_PASSWORD=test -p 127.0.0.1:5432:5432 postgres:18 -c wal_level=logical
           timeout 60 sh -c 'until docker exec postgres pg_isready -U postgres -h 127.0.0.1; do sleep 1; done'
+          docker exec postgres psql -U postgres -c 'CREATE DATABASE lakekeeper'
+      - name: Start an Iceberg REST catalog
+        run: tests/catalog/start.sh "$RUNNER_TEMP/catalog" postgres://postgres:test@127.0.0.1:5432/lakekeeper >> "$GITHUB_ENV"
       - name: Test
         env:
           PCS_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/postgres

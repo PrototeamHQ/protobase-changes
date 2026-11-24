@@ -18,12 +18,18 @@ const MessagePrefix = "protobase_"
 // Decoder follows one pgoutput stream. It is not safe for concurrent use.
 type Decoder struct {
 	log       *slog.Logger
-	relations map[uint32]*pglogrepl.RelationMessage
+	relations map[uint32]relationDef
 	open      *change.Transaction
 }
 
+// relationDef is a table definition with the columns every change under it shares.
+type relationDef struct {
+	*pglogrepl.RelationMessage
+	columns []change.Column
+}
+
 func New(log *slog.Logger) *Decoder {
-	return &Decoder{log: log, relations: map[uint32]*pglogrepl.RelationMessage{}}
+	return &Decoder{log: log, relations: map[uint32]relationDef{}}
 }
 
 // Decode takes the next message of the stream and returns the transaction it
@@ -31,7 +37,7 @@ func New(log *slog.Logger) *Decoder {
 func (d *Decoder) Decode(msg pglogrepl.Message) (*change.Transaction, error) {
 	switch m := msg.(type) {
 	case *pglogrepl.RelationMessage:
-		d.relations[m.RelationID] = m
+		d.relations[m.RelationID] = relationDef{RelationMessage: m, columns: columns(m)}
 		return nil, nil
 	case *pglogrepl.BeginMessage:
 		if d.open != nil {
@@ -94,9 +100,9 @@ func (d *Decoder) insert(m *pglogrepl.InsertMessage) error {
 	if err != nil {
 		return err
 	}
-	newRow := row(rel, m.Tuple, false)
+	newRow := row(rel.RelationMessage, m.Tuple, false)
 	tx.Changes = append(tx.Changes, change.Change{
-		Table: table(rel), Operation: change.Insert, Key: key(rel, newRow), NewRow: newRow,
+		Table: table(rel.RelationMessage), Operation: change.Insert, Columns: rel.columns, Key: key(rel.RelationMessage, newRow), NewRow: newRow,
 	})
 	return nil
 }
@@ -106,11 +112,11 @@ func (d *Decoder) update(m *pglogrepl.UpdateMessage) error {
 	if err != nil {
 		return err
 	}
-	c := change.Change{Table: table(rel), Operation: change.Update, NewRow: row(rel, m.NewTuple, false)}
-	c.OldRowKind, c.OldRow = oldRow(rel, m.OldTupleType, m.OldTuple)
-	c.Key = key(rel, c.NewRow)
+	c := change.Change{Table: table(rel.RelationMessage), Operation: change.Update, Columns: rel.columns, NewRow: row(rel.RelationMessage, m.NewTuple, false)}
+	c.OldRowKind, c.OldRow = oldRow(rel.RelationMessage, m.OldTupleType, m.OldTuple)
+	c.Key = key(rel.RelationMessage, c.NewRow)
 	if c.OldRowKind != change.NoOldRow {
-		c.Key = key(rel, c.OldRow)
+		c.Key = key(rel.RelationMessage, c.OldRow)
 	}
 	tx.Changes = append(tx.Changes, c)
 	return nil
@@ -121,9 +127,9 @@ func (d *Decoder) delete(m *pglogrepl.DeleteMessage) error {
 	if err != nil {
 		return err
 	}
-	c := change.Change{Table: table(rel), Operation: change.Delete}
-	c.OldRowKind, c.OldRow = oldRow(rel, m.OldTupleType, m.OldTuple)
-	c.Key = key(rel, c.OldRow)
+	c := change.Change{Table: table(rel.RelationMessage), Operation: change.Delete, Columns: rel.columns}
+	c.OldRowKind, c.OldRow = oldRow(rel.RelationMessage, m.OldTupleType, m.OldTuple)
+	c.Key = key(rel.RelationMessage, c.OldRow)
 	tx.Changes = append(tx.Changes, c)
 	return nil
 }
@@ -139,8 +145,9 @@ func (d *Decoder) truncate(m *pglogrepl.TruncateMessage) error {
 			return fmt.Errorf("truncate of unknown relation %d", id)
 		}
 		tx.Changes = append(tx.Changes, change.Change{
-			Table:           table(rel),
+			Table:           table(rel.RelationMessage),
 			Operation:       change.Truncate,
+			Columns:         rel.columns,
 			Cascade:         m.Option&pglogrepl.TruncateOptionCascade != 0,
 			RestartIdentity: m.Option&pglogrepl.TruncateOptionRestartIdentity != 0,
 		})
@@ -155,14 +162,14 @@ func (d *Decoder) transaction(what string) (*change.Transaction, error) {
 	return d.open, nil
 }
 
-func (d *Decoder) target(relationID uint32, what string) (*pglogrepl.RelationMessage, *change.Transaction, error) {
+func (d *Decoder) target(relationID uint32, what string) (relationDef, *change.Transaction, error) {
 	tx, err := d.transaction(what)
 	if err != nil {
-		return nil, nil, err
+		return relationDef{}, nil, err
 	}
 	rel, ok := d.relations[relationID]
 	if !ok {
-		return nil, nil, fmt.Errorf("%s of unknown relation %d", what, relationID)
+		return relationDef{}, nil, fmt.Errorf("%s of unknown relation %d", what, relationID)
 	}
 	return rel, tx, nil
 }

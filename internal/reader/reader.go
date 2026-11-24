@@ -140,6 +140,11 @@ func connect(ctx context.Context, url string) (*pgconn.PgConn, error) {
 		return nil, fmt.Errorf("database_url: %w", err)
 	}
 	cfg.RuntimeParams["replication"] = "database"
+	// Values arrive in the session's text format: ISO dates, times in UTC and
+	// bytea in hex, whatever the server's defaults.
+	cfg.RuntimeParams["DateStyle"] = "ISO, MDY"
+	cfg.RuntimeParams["TimeZone"] = "UTC"
+	cfg.RuntimeParams["bytea_output"] = "hex"
 	conn, err := pgconn.ConnectConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect for replication: %w", err)

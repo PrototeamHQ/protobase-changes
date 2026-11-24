@@ -15,7 +15,11 @@ import (
 func relation(identity uint8) *pglogrepl.RelationMessage {
 	return &pglogrepl.RelationMessage{
 		RelationID: 7, Namespace: "public", RelationName: "messages", ReplicaIdentity: identity,
-		Columns: []*pglogrepl.RelationMessageColumn{{Name: "id", Flags: 1}, {Name: "body"}, {Name: "note"}},
+		Columns: []*pglogrepl.RelationMessageColumn{
+			{Name: "id", Flags: 1, DataType: 23, TypeModifier: -1},
+			{Name: "body", DataType: 25, TypeModifier: -1},
+			{Name: "note", DataType: 1043, TypeModifier: 104},
+		},
 	}
 }
 
@@ -82,17 +86,22 @@ func TestDecodesATransaction(t *testing.T) {
 		t.Fatalf("transaction header %+v", tx)
 	}
 	table := change.Table{Schema: "public", Name: "messages"}
+	cols := []change.Column{
+		{Name: "id", Type: 23, Modifier: -1, Key: true},
+		{Name: "body", Type: 25, Modifier: -1},
+		{Name: "note", Type: 1043, Modifier: 104},
+	}
 	want := []change.Change{
-		{Table: table, Operation: change.Insert, Key: change.Row{"id": v("1")},
+		{Table: table, Operation: change.Insert, Columns: cols, Key: change.Row{"id": v("1")},
 			NewRow: change.Row{"id": v("1"), "body": v("hi"), "note": {Kind: change.Null}}},
-		{Table: table, Operation: change.Update, Key: change.Row{"id": v("1")},
+		{Table: table, Operation: change.Update, Columns: cols, Key: change.Row{"id": v("1")},
 			NewRow: change.Row{"id": v("1"), "body": v("hey"), "note": {Kind: change.Unchanged}}},
-		{Table: table, Operation: change.Update, Key: change.Row{"id": v("1")},
+		{Table: table, Operation: change.Update, Columns: cols, Key: change.Row{"id": v("1")},
 			OldRowKind: change.OldKeyOnly, OldRow: change.Row{"id": v("1")},
 			NewRow: change.Row{"id": v("2"), "body": v("hey"), "note": {Kind: change.Null}}},
-		{Table: table, Operation: change.Delete, Key: change.Row{"id": v("2")},
+		{Table: table, Operation: change.Delete, Columns: cols, Key: change.Row{"id": v("2")},
 			OldRowKind: change.OldKeyOnly, OldRow: change.Row{"id": v("2")}},
-		{Table: table, Operation: change.Truncate, Cascade: true},
+		{Table: table, Operation: change.Truncate, Columns: cols, Cascade: true},
 	}
 	if !reflect.DeepEqual(tx.Changes, want) {
 		t.Fatalf("changes\n got %+v\nwant %+v", tx.Changes, want)
@@ -117,6 +126,11 @@ func TestFullReplicaIdentityHasNoKey(t *testing.T) {
 	c := txs[0].Changes[0]
 	if c.Key != nil || c.OldRowKind != change.OldFull || len(c.OldRow) != 3 {
 		t.Fatalf("change %+v", c)
+	}
+	for _, col := range c.Columns {
+		if col.Key {
+			t.Fatalf("column %s is a key column under REPLICA IDENTITY FULL", col.Name)
+		}
 	}
 }
 
