@@ -137,3 +137,20 @@ func TestReadyClosesOnceCaughtUp(t *testing.T) {
 		t.Fatal("not ready after reading up to where the WAL ended")
 	}
 }
+
+func TestReadyReopensWhenAReconnectFallsBehind(t *testing.T) {
+	f := newFeed(t)
+	f.Resume(epoch, 100, 100)
+	<-f.Ready()
+	f.Resume(epoch, 100, 300)
+	select {
+	case <-f.Ready():
+		t.Fatal("ready while the new connection has not caught up")
+	default:
+	}
+	if _, err := f.Head(); err != ErrNotReady {
+		t.Fatalf("head %v, want not ready", err)
+	}
+	f.Decoded(300)
+	<-f.Ready()
+}

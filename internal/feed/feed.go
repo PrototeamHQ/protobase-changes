@@ -46,7 +46,9 @@ type Feed struct {
 	started bool
 	// ready is whether the stream read past caughtUp, where the WAL ended when
 	// it connected: only then are the revocations in it all recorded.
-	ready    bool
+	ready bool
+	// readyCh is closed while the feed is ready, and replaced by an open one
+	// when a reconnect makes it fall behind again.
 	readyCh  chan struct{}
 	caughtUp pglogrepl.LSN
 	epoch    cursor.Epoch
@@ -85,7 +87,11 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 	f.started = true
 	f.epoch = epoch
 	f.caughtUp = caughtUp
+	wasReady := f.ready
 	f.ready = f.end >= caughtUp
+	if wasReady && !f.ready {
+		f.readyCh = make(chan struct{})
+	}
 	f.signalReady()
 	return f.end, nil
 }
@@ -119,7 +125,7 @@ func (f *Feed) Append(tx *change.Transaction) {
 	f.tail.Append(&Entry{Tx: tx, Cursor: f.Cursors.Seal(at), ID: f.Cursors.ID(at)})
 }
 
-// signalReady closes readyCh the first time the feed is ready. Called with mu held.
+// signalReady closes readyCh once the feed is ready. Called with mu held.
 func (f *Feed) signalReady() {
 	if !f.ready {
 		return
@@ -131,9 +137,14 @@ func (f *Feed) signalReady() {
 	}
 }
 
-// Ready returns a channel that closes once the stream has read all the WAL
-// there was when it first connected, after which Head succeeds.
-func (f *Feed) Ready() <-chan struct{} { return f.readyCh }
+// Ready returns a channel that is closed while the stream has read all the
+// WAL there was when it last connected. A Head that fails with ErrNotReady
+// after taking it waits on it, then tries again.
+func (f *Feed) Ready() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.readyCh
+}
 
 // Head returns where the stream reached, for a consumer that starts live:
 // after every transaction the feed took in so far.
