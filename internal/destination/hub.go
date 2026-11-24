@@ -253,21 +253,32 @@ func (h *Hub) Resume(name string) error {
 	return nil
 }
 
-// Stored returns the lowest cursor the store holds of a running destination
-// that delivers; ok is false when none holds back a confirm of the slot.
-// A destination that is starting holds it back at zero until it saved.
+// Stored returns the lowest cursor the store holds of a destination of the
+// set that delivers, running or waiting for a run of the hub; ok is false
+// when none holds back a confirm of the slot. Until the hub loaded, and
+// while a destination starts until it saved, it holds the confirm at zero.
 func (h *Hub) Stored() (pglogrepl.LSN, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	var low pglogrepl.LSN
-	found := false
-	for _, r := range h.running {
-		lsn, ok := r.w.Stored()
-		if ok && (!found || lsn < low) {
-			low, found = lsn, true
-		}
+	if !h.loaded {
+		return 0, true
 	}
-	return low, found
+	low := uint64(noHold)
+	for _, r := range h.running {
+		low = min(low, r.w.stored.Load())
+	}
+	for _, d := range h.set.Destinations {
+		state, ok := h.states[d.Name]
+		if !ok {
+			continue
+		}
+		if state.unsaved {
+			low = 0
+			continue
+		}
+		low = min(low, holdOf(state.state))
+	}
+	return pglogrepl.LSN(low), low != noHold
 }
 
 // startLocked runs a worker from state, or from the newest change when the

@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pglogrepl"
-
 	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 )
@@ -50,19 +48,14 @@ type worker struct {
 const noHold = math.MaxUint64
 
 // markStored records what the store now holds as state.
-func (w *worker) markStored() {
-	if w.state.Status != Active || w.state.Batch != nil {
-		w.stored.Store(noHold)
-		return
-	}
-	w.stored.Store(uint64(w.state.Position.LSN))
-}
+func (w *worker) markStored() { w.stored.Store(holdOf(w.state)) }
 
-// Stored returns the cursor the store holds while the destination delivers;
-// ok is false when it holds back nothing.
-func (w *worker) Stored() (pglogrepl.LSN, bool) {
-	v := w.stored.Load()
-	return pglogrepl.LSN(v), v != noHold
+// holdOf is where a destination the store holds at s holds back the confirm.
+func holdOf(s State) uint64 {
+	if s.Status != Active || s.Batch != nil {
+		return noHold
+	}
+	return uint64(s.Position.LSN)
 }
 
 // held returns where the worker got to, for the next worker of its
