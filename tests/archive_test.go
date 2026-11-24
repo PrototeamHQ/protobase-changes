@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	neturl "net/url"
 	"os"
 	"sort"
 	"strings"
@@ -294,4 +295,38 @@ func TestArchiveConfirmsOnlyCommittedSegments(t *testing.T) {
 	if len(rows) != 1 || rows[0]["new"].(map[string]any)["body"] != "kept" {
 		t.Fatalf("archived %v", rows)
 	}
+}
+
+// An app database without changes still lets the server drop the WAL other
+// databases write.
+func TestArchiveConfirmsAnIdleDatabase(t *testing.T) {
+	url := databaseURL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	other := connect(t, ctx, url)
+	name := fmt.Sprintf("pcs_test_%d", time.Now().UnixNano())
+	exec(t, ctx, other, "CREATE DATABASE "+name)
+	t.Cleanup(func() { exec(t, context.Background(), other, "DROP DATABASE "+name+" WITH (FORCE)") })
+	appURL := inDatabase(t, url, name)
+	db := connect(t, ctx, appURL)
+	setUp(t, ctx, db, name)
+
+	app := archiveApp(t, ctx, appURL, name, 1)
+	stop := archiving(t, ctx, app)
+	defer stop()
+	before := currentLSN(t, ctx, other)
+	exec(t, ctx, other, fmt.Sprintf("CREATE TABLE %s (id int)", name))
+	exec(t, ctx, other, "DROP TABLE "+name)
+	waitConfirmed(t, ctx, db, name, before)
+}
+
+// inDatabase points a database URL at another database on the same server.
+func inDatabase(t *testing.T, rawURL, name string) string {
+	t.Helper()
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + name
+	return u.String()
 }

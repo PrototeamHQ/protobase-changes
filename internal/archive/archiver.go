@@ -15,6 +15,9 @@ import (
 // Confirmer lets Postgres drop the WAL up to a position, such as the reader.
 type Confirmer interface {
 	Confirm(lsn pglogrepl.LSN)
+	// Received is a position before which every committed transaction
+	// reached the feed, so it can be confirmed once all of them are archived.
+	Received() pglogrepl.LSN
 }
 
 // Archiver follows an app's feed and commits it to the archive a segment at
@@ -37,16 +40,20 @@ func New(cfg config.Archive, cat catalog.Catalog, f *feed.Feed, confirm Confirme
 // transaction again from the slot.
 func (a *Archiver) Run(ctx context.Context) error {
 	var seg segment
-	var read pglogrepl.LSN
+	var read, idleConfirmed pglogrepl.LSN
 	nextMaintenance := time.Now()
 	for {
 		changed := a.feed.Changed()
+		// Taken before reading the feed, which then holds every transaction
+		// committed before it.
+		received := a.confirm.Received()
 		// Everything before the slot's position the stream started from is
 		// archived already, as only the archive confirms the slot.
 		entries, ok := a.feed.SinceStart(read)
 		if !ok {
 			return fmt.Errorf("archive: the tail dropped transactions after %s before they were archived", read)
 		}
+		idle := len(entries) == 0 && len(seg.txs) == 0
 		for _, e := range entries {
 			seg.add(e.Tx, time.Now())
 			read = e.Tx.CommitLSN
@@ -58,6 +65,12 @@ func (a *Archiver) Run(ctx context.Context) error {
 			}
 			seg = segment{}
 		}
+		// Everything committed before received is archived, so an app
+		// without changes does not hold the WAL other databases write.
+		if upTo := a.held(received); idle && upTo > idleConfirmed {
+			a.confirm.Confirm(upTo)
+			idleConfirmed = upTo
+		}
 		if !time.Now().Before(nextMaintenance) {
 			retention := time.Duration(a.cfg.RetentionHours) * time.Hour
 			if err := maintain(ctx, a.cat, a.cfg.Namespace, retention, time.Now()); err != nil {
@@ -66,9 +79,15 @@ func (a *Archiver) Run(ctx context.Context) error {
 			nextMaintenance = time.Now().Add(maintenanceInterval)
 		}
 
+		// An empty segment wakes as often as a full one rolls over, to
+		// confirm how far the stream came.
+		next := time.Now().Add(a.segmentDuration())
+		if len(seg.txs) > 0 {
+			next = a.deadline(seg)
+		}
 		wake := nextMaintenance
-		if len(seg.txs) > 0 && a.deadline(seg).Before(wake) {
-			wake = a.deadline(seg)
+		if next.Before(wake) {
+			wake = next
 		}
 		timer := time.NewTimer(time.Until(wake))
 		select {
@@ -84,12 +103,15 @@ func (a *Archiver) Run(ctx context.Context) error {
 
 // deadline is when seg rolls over at the latest.
 func (a *Archiver) deadline(seg segment) time.Time {
-	return seg.started.Add(time.Duration(a.cfg.SegmentSeconds) * time.Second)
+	return seg.started.Add(a.segmentDuration())
+}
+
+func (a *Archiver) segmentDuration() time.Duration {
+	return time.Duration(a.cfg.SegmentSeconds) * time.Second
 }
 
 // flush commits a segment table by table, then confirms the slot up to its
-// end, but never past a revocation whose tokens may still be valid: the
-// feed holds revocations only in memory, so a restart must read them again.
+// end, but never past a revocation whose tokens may still be valid.
 func (a *Archiver) flush(ctx context.Context, seg segment) error {
 	byTable, err := seg.tables()
 	if err != nil {
@@ -100,10 +122,15 @@ func (a *Archiver) flush(ctx context.Context, seg segment) error {
 			return fmt.Errorf("archive %s.%s: %w", t.Schema, t.Name, err)
 		}
 	}
-	upTo := seg.end()
-	if held, ok := a.feed.Revoked.Oldest(time.Now()); ok && held < upTo {
-		upTo = held
-	}
-	a.confirm.Confirm(upTo)
+	a.confirm.Confirm(a.held(seg.end()))
 	return nil
+}
+
+// held lowers lsn to the oldest revocation whose tokens may still be valid:
+// the feed holds revocations only in memory, so a restart must read them again.
+func (a *Archiver) held(lsn pglogrepl.LSN) pglogrepl.LSN {
+	if oldest, ok := a.feed.Revoked.Oldest(time.Now()); ok && oldest < lsn {
+		return oldest
+	}
+	return lsn
 }

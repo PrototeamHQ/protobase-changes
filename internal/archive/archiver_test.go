@@ -31,25 +31,33 @@ func newFeed(t *testing.T, size int) *feed.Feed {
 	return f
 }
 
-// confirmations records each confirmed position.
+// confirmations records each confirmed position, of a stream that has
+// received no keepalive yet.
 type confirmations chan pglogrepl.LSN
 
 func (c confirmations) Confirm(lsn pglogrepl.LSN) { c <- lsn }
 
+func (c confirmations) Received() pglogrepl.LSN { return 0 }
+
 func startArchiver(t *testing.T, cfg config.Archive) (*feed.Feed, confirmations, func() error) {
 	t.Helper()
-	cat := devCatalog(t)
 	tl := newFeed(t, 100)
 	confirmed := make(confirmations, 10)
+	return tl, confirmed, runArchiver(t, cfg, tl, confirmed)
+}
+
+func runArchiver(t *testing.T, cfg config.Archive, tl *feed.Feed, confirm Confirmer) func() error {
+	t.Helper()
+	cat := devCatalog(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- New(cfg, cat, tl, confirmed).Run(ctx) }()
+	go func() { done <- New(cfg, cat, tl, confirm).Run(ctx) }()
 	stop := sync.OnceValue(func() error {
 		cancel()
 		return <-done
 	})
 	t.Cleanup(func() { stop() })
-	return tl, confirmed, stop
+	return stop
 }
 
 func waitConfirm(t *testing.T, c confirmations, within time.Duration) pglogrepl.LSN {

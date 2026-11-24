@@ -32,6 +32,9 @@ func New(log *slog.Logger) *Decoder {
 	return &Decoder{log: log, relations: map[uint32]relationDef{}}
 }
 
+// Open reports whether a transaction has begun and not yet committed.
+func (d *Decoder) Open() bool { return d.open != nil }
+
 // Decode takes the next message of the stream and returns the transaction it
 // commits, or nil while a transaction is still open.
 func (d *Decoder) Decode(msg pglogrepl.Message) (*change.Transaction, error) {
