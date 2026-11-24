@@ -29,6 +29,9 @@ func TestParseValue(t *testing.T) {
 		{"2026-11-24", p.Date, arrow.Date32(20781)},
 		{"1969-12-31", p.Date, arrow.Date32(-1)},
 		{"infinity", p.Date, dateInfinity},
+		{"300000-01-01", p.Date, arrow.Date32(time.Date(300000, 1, 1, 0, 0, 0, 0, time.UTC).Unix() / 86400)},
+		{"5874897-12-31", p.Date, arrow.Date32(time.Date(5874897, 12, 31, 0, 0, 0, 0, time.UTC).Unix() / 86400)},
+		{"4714-11-24 BC", p.Date, arrow.Date32(time.Date(-4713, 11, 24, 0, 0, 0, 0, time.UTC).Unix() / 86400)},
 		{"0001-01-01 BC", p.Date, arrow.Date32(time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC).Unix() / 86400)},
 		{"13:45:06.5", p.Time, arrow.Time64((13*3600+45*60+6)*1e6 + 500000)},
 		{"2026-11-24 05:36:38.466", p.Timestamp, micros(time.Date(2026, 11, 24, 5, 36, 38, 466e6, time.UTC))},
@@ -36,6 +39,8 @@ func TestParseValue(t *testing.T) {
 		{"2026-11-24 11:06:38+05:30", p.TimestampTz, micros(time.Date(2026, 11, 24, 5, 36, 38, 0, time.UTC))},
 		{"1960-01-01 00:00:00.25+00", p.TimestampTz, micros(time.Date(1960, 1, 1, 0, 0, 0, 25e7, time.UTC))},
 		{"10000-01-01 00:00:00", p.Timestamp, micros(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC))},
+		{"294246-12-31 23:59:59.999999", p.Timestamp, arrow.Timestamp(time.Date(294246, 12, 31, 23, 59, 59, 0, time.UTC).Unix()*1e6 + 999999)},
+		{"4714-11-24 00:00:00+00 BC", p.TimestampTz, arrow.Timestamp(time.Date(-4713, 11, 24, 0, 0, 0, 0, time.UTC).Unix() * 1e6)},
 		{"-infinity", p.TimestampTz, tsMinusInfinity},
 	}
 	for _, c := range cases {
@@ -70,6 +75,9 @@ func TestParseValueRefuses(t *testing.T) {
 		{"24.11.2026", p.Date},
 		{"1:2:3", p.Time},
 		{"2026-11-24T05:36:38Z", p.TimestampTz},
+		{"294276-01-01 00:00:00", p.Timestamp},
+		{"294247-01-10 04:00:54.775807", p.Timestamp},
+		{"294247-01-10 06:00:54+02", p.TimestampTz},
 	}
 	for _, c := range cases {
 		if _, err := parseValue(c.text, c.typ); err == nil {

@@ -77,11 +77,17 @@ func parseDate(text string) (arrow.Date32, error) {
 	case "-infinity":
 		return dateMinusInfinity, nil
 	}
-	ts, err := parseTimestamp(text)
+	secs, _, err := parseInstant(text)
 	if err != nil {
 		return 0, err
 	}
-	return arrow.Date32(int64(ts) / (24 * int64(time.Hour/time.Microsecond))), nil
+	// Unix seconds hold every Postgres date, unlike microseconds, and a date
+	// is midnight UTC, so the division is exact.
+	days := secs / 86400
+	if days <= int64(dateMinusInfinity) || days >= int64(dateInfinity) {
+		return 0, fmt.Errorf("date %q is out of range", text)
+	}
+	return arrow.Date32(days), nil
 }
 
 func parseTime(text string) (arrow.Time64, error) {
@@ -94,6 +100,13 @@ func parseTime(text string) (arrow.Time64, error) {
 	return arrow.Time64(micros), nil
 }
 
+// Unix seconds of the finite timestamps the archive holds: whole seconds
+// whose microseconds fit an int64 without reaching the infinities.
+const (
+	minTimestampSeconds = math.MinInt64/1_000_000 + 1
+	maxTimestampSeconds = math.MaxInt64/1_000_000 - 1
+)
+
 func parseTimestamp(text string) (arrow.Timestamp, error) {
 	switch text {
 	case "infinity":
@@ -101,22 +114,37 @@ func parseTimestamp(text string) (arrow.Timestamp, error) {
 	case "-infinity":
 		return tsMinusInfinity, nil
 	}
+	secs, frac, err := parseInstant(text)
+	if err != nil {
+		return 0, err
+	}
+	// Postgres counts microseconds from 2000, so its last 30 years of
+	// timestamps, after 294246, fit no microseconds from 1970: such a value
+	// stops the archive rather than wrapping around.
+	if secs < minTimestampSeconds || secs > maxTimestampSeconds {
+		return 0, fmt.Errorf("timestamp %q is out of range", text)
+	}
+	return arrow.Timestamp(secs*1e6 + frac), nil
+}
+
+// parseInstant reads a date or timestamp as Unix seconds in UTC and the
+// microseconds after them.
+func parseInstant(text string) (secs, frac int64, err error) {
 	m := timestampText.FindStringSubmatch(text)
 	if m == nil {
-		return 0, fmt.Errorf("timestamp %q", text)
+		return 0, 0, fmt.Errorf("timestamp %q", text)
 	}
 	year := atoi(m[1])
 	if m[12] != "" {
 		// 1 BC is year 0, 2 BC year -1.
 		year = 1 - year
 	}
-	offset := (atoi(m[9])*3600 + atoi(m[10])*60 + atoi(m[11]))
+	offset := int64(atoi(m[9])*3600 + atoi(m[10])*60 + atoi(m[11]))
 	if m[8] == "-" {
 		offset = -offset
 	}
 	t := time.Date(year, time.Month(atoi(m[2])), atoi(m[3]), atoi(m[4]), atoi(m[5]), atoi(m[6]), 0, time.UTC)
-	micros := t.Unix()*1e6 - int64(offset)*1e6 + fraction(m[7])
-	return arrow.Timestamp(micros), nil
+	return t.Unix() - offset, fraction(m[7]), nil
 }
 
 // atoi reads digits the patterns above already matched; empty reads as 0.
