@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
@@ -41,7 +42,7 @@ func sqliteConfig(t *testing.T) (path string, cfg config.Config) {
 	return path, cfg
 }
 
-func TestStartupWantsMigratedStores(t *testing.T) {
+func TestAnUnmigratedStoreHoldsBackOnlyItsHub(t *testing.T) {
 	ctx := context.Background()
 	path, cfg := sqliteConfig(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -54,8 +55,9 @@ func TestStartupWantsMigratedStores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hubs(ctx, cfg, fs, ss, log); !errors.Is(err, store.ErrSchema) {
-		t.Fatalf("started on a store without its schema: %v", err)
+	hs := hubs(cfg, fs, ss, log)
+	if err := hs["shop"].Run(ctx); !errors.Is(err, store.ErrSchema) {
+		t.Fatalf("ran on a store without its schema: %v", err)
 	}
 	closeStores(ss)
 
@@ -68,9 +70,16 @@ func TestStartupWantsMigratedStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeStores(ss)
-	hs, err := hubs(ctx, cfg, fs, ss, log)
-	if err != nil || hs["shop"] == nil {
-		t.Fatalf("hubs after migrate: %v %v", hs, err)
+	hs = hubs(cfg, fs, ss, log)
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- hs["shop"].Run(runCtx) }()
+	for !hs["shop"].Loaded() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run after migrate: %v", err)
 	}
 }
 

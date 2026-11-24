@@ -58,6 +58,8 @@ type Letter struct {
 // Store keeps each app's destination set and every destination's state. A
 // set is kept as the token that defined it, so its secrets stay encrypted.
 type Store interface {
+	// Check fails unless the store holds the schema this version needs.
+	Check(ctx context.Context) error
 	// Definitions returns the app's set token, or "" when it has none.
 	Definitions(ctx context.Context, app string) (string, error)
 	PutDefinitions(ctx context.Context, app, raw string) error

@@ -32,10 +32,7 @@ func destinationServer(t *testing.T) (url string, kept *store.SQL) {
 		t.Fatal(err)
 	}
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	hub, err := destination.NewHub(ctx, fx.feed, kept, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
-	if err != nil {
-		t.Fatal(err)
-	}
+	hub := destination.NewHub(fx.feed, kept, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -46,6 +43,9 @@ func destinationServer(t *testing.T) (url string, kept *store.SQL) {
 		cancel()
 		<-done
 	})
+	for !hub.Loaded() {
+		time.Sleep(5 * time.Millisecond)
+	}
 	s := New(map[string]*feed.Feed{"shop": fx.feed, "blog": fx.feed}, map[string]*destination.Hub{"shop": hub})
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -127,6 +127,26 @@ func TestResumeDestination(t *testing.T) {
 		if got := do(t, http.MethodPost, url+ResumePath("shop", c.destination), c.token, ""); got != c.want {
 			t.Errorf("%s: %d, want %d", c.name, got, c.want)
 		}
+	}
+}
+
+func TestDestinationsWaitForTheHubToLoad(t *testing.T) {
+	fx := newFixture(t)
+	kept, err := store.Open(config.Store{Kind: config.SQLite, Path: filepath.Join(t.TempDir(), "changes.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { kept.Close() })
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub := destination.NewHub(fx.feed, kept, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
+	srv := httptest.NewServer(New(map[string]*feed.Feed{"shop": fx.feed}, map[string]*destination.Hub{"shop": hub}).Handler())
+	t.Cleanup(srv.Close)
+	if got := do(t, http.MethodPut, srv.URL+DestinationsPath("shop"), "", set(t, time.Now().Unix())); got != http.StatusServiceUnavailable {
+		t.Fatalf("put %d, want 503", got)
+	}
+	resume := seal(t, map[string]any{"iss": issuer, "exp": time.Now().Add(time.Minute).Unix(), "resume": "orders-hook"})
+	if got := do(t, http.MethodPost, srv.URL+ResumePath("shop", "orders-hook"), resume, ""); got != http.StatusServiceUnavailable {
+		t.Fatalf("resume %d, want 503", got)
 	}
 }
 

@@ -35,17 +35,24 @@ type memStore struct {
 	states  map[string]State
 	letters []Letter
 	writes  int
-	// failDeletes and failPuts fail that many deletes or state puts before
-	// the next succeeds.
-	failDeletes int
-	failPuts    int
+	// failDefinitions, failDeletes and failPuts fail that many reads of the
+	// set, deletes or state puts before the next succeeds.
+	failDefinitions int
+	failDeletes     int
+	failPuts        int
 }
 
 func newMemStore() *memStore { return &memStore{raw: map[string]string{}, states: map[string]State{}} }
 
+func (m *memStore) Check(context.Context) error { return nil }
+
 func (m *memStore) Definitions(_ context.Context, app string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failDefinitions > 0 {
+		m.failDefinitions--
+		return "", errors.New("the store is down")
+	}
 	return m.raw[app], nil
 }
 
@@ -194,16 +201,8 @@ func order(f *feed.Feed, lsn pglogrepl.LSN, id, from, to string) {
 func startHub(t *testing.T, f *feed.Feed, store Store, raw string, functions string) *Hub {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	h, err := NewHub(ctx, f, store, &Sender{Client: http.DefaultClient, FunctionsURL: functions, Now: time.Now}, quiet)
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := NewHub(f, store, &Sender{Client: http.DefaultClient, FunctionsURL: functions, Now: time.Now}, quiet)
 	h.delays = []time.Duration{10 * time.Millisecond}
-	if raw != "" {
-		if err := h.Put(ctx, raw); err != nil {
-			t.Fatal(err)
-		}
-	}
 	done := make(chan error, 1)
 	go func() { done <- h.Run(ctx) }()
 	t.Cleanup(func() {
@@ -212,6 +211,12 @@ func startHub(t *testing.T, f *feed.Feed, store Store, raw string, functions str
 			t.Errorf("hub stopped: %v", err)
 		}
 	})
+	eventually(t, "the hub to load", h.Loaded)
+	if raw != "" {
+		if err := h.Put(ctx, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return h
 }
 

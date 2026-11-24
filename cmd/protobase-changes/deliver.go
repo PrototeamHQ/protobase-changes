@@ -48,8 +48,10 @@ func migrate(ctx context.Context, ss map[string]*store.SQL) error {
 	return nil
 }
 
-// hubs checks each store's schema and loads its app's destinations.
-func hubs(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, ss map[string]*store.SQL, log *slog.Logger) (map[string]*destination.Hub, error) {
+// hubs returns a hub for each app that keeps a store. Each hub checks its
+// store and loads its destinations when it runs, so an app whose store is
+// behind or unreachable holds back only itself.
+func hubs(cfg config.Config, fs map[string]*feed.Feed, ss map[string]*store.SQL, log *slog.Logger) map[string]*destination.Hub {
 	client := &http.Client{}
 	out := map[string]*destination.Hub{}
 	for _, app := range cfg.Apps {
@@ -57,17 +59,10 @@ func hubs(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, ss m
 		if !ok {
 			continue
 		}
-		if err := s.Check(ctx); err != nil {
-			return nil, fmt.Errorf("app %s: %w", app.Name, err)
-		}
 		sender := &destination.Sender{Client: client, FunctionsURL: app.FunctionsURL, Now: time.Now}
-		h, err := destination.NewHub(ctx, fs[app.Name], s, sender, log)
-		if err != nil {
-			return nil, err
-		}
-		out[app.Name] = h
+		out[app.Name] = destination.NewHub(fs[app.Name], s, sender, log)
 	}
-	return out, nil
+	return out
 }
 
 // deliver runs every hub until ctx ends, also when there are none. A hub that

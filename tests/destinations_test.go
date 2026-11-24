@@ -124,10 +124,7 @@ func TestDeliversFromTheDatabase(t *testing.T) {
 	f := newFeed(t, app)
 	stop := start(t, ctx, reader.New(app, f, log, nil))
 	defer stop()
-	hub, err := destination.NewHub(ctx, f, s, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, log)
-	if err != nil {
-		t.Fatal(err)
-	}
+	hub := destination.NewHub(f, s, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, log)
 	hubCtx, stopHub := context.WithCancel(ctx)
 	hubDone := make(chan error, 1)
 	go func() { hubDone <- hub.Run(hubCtx) }()
@@ -137,6 +134,9 @@ func TestDeliversFromTheDatabase(t *testing.T) {
 			t.Errorf("hub stopped: %v", err)
 		}
 	}()
+	for !hub.Loaded() {
+		time.Sleep(10 * time.Millisecond)
+	}
 	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}, map[string]*destination.Hub{"shop": hub}).Handler())
 	defer srv.Close()
 
