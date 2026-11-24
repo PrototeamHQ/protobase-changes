@@ -212,8 +212,9 @@ func TestEventStreamResumesWithLastEventID(t *testing.T) {
 	fx.insert(110)
 	fx.insert(120)
 	tok := seal(t, claims(nil))
+	// The reconnect keeps the first URL's cursor; the last event's id wins.
 	header := http.Header{"Accept": {"text/event-stream"}, "Last-Event-Id": {fx.cursor(110)}}
-	res := get(t, fx.url+ChangesPath("shop", ""), tok, header)
+	res := get(t, fx.url+ChangesPath("shop", fx.cursor(100)), tok, header)
 	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "text/event-stream" ||
 		res.Header.Get("X-Accel-Buffering") != "no" {
 		t.Fatalf("answered %d %v", res.StatusCode, res.Header)

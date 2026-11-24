@@ -60,9 +60,10 @@ func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
 	websocket := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 	events := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 	sealed := r.URL.Query().Get(CursorParam)
-	if sealed == "" && events {
-		// An event source resends the id of the last event it got.
-		sealed = r.Header.Get("Last-Event-ID")
+	if last := r.Header.Get("Last-Event-ID"); last != "" && events {
+		// An event source reconnects to the same URL and resends the id of the
+		// last event it got, which is past the cursor it first asked for.
+		sealed = last
 	}
 	st, err := stream.Open(f, tok, sealed, s.now)
 	if err != nil {
