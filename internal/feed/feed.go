@@ -131,10 +131,7 @@ func (f *Feed) Reset(from pglogrepl.LSN) {
 // Revoke records revocations read from revoke.Table rather than the stream,
 // such as those committed before the slot's start.
 func (f *Feed) Revoke(rs []revoke.Revocation) {
-	now := time.Now()
-	for _, r := range rs {
-		f.Revoked.Add(r.Sid, r.Until, now)
-	}
+	f.Revoked.AddAll(rs, time.Now())
 }
 
 // Decoded marks that the stream sent every transaction committed before lsn.

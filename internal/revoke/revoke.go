@@ -22,15 +22,23 @@ func New() *Set {
 // Add revokes the session sid until its last token expires. It also forgets
 // every session whose tokens have all expired by now.
 func (s *Set) Add(sid string, until, now time.Time) {
+	s.AddAll([]Revocation{{Sid: sid, Until: until}}, now)
+}
+
+// AddAll revokes every session rs names, as Add would one by one, but
+// forgets the expired sessions only once.
+func (s *Set) AddAll(rs []Revocation, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for other, u := range s.sessions {
+	for sid, u := range s.sessions {
 		if !u.After(now) {
-			delete(s.sessions, other)
+			delete(s.sessions, sid)
 		}
 	}
-	if until.After(s.sessions[sid]) {
-		s.sessions[sid] = until
+	for _, r := range rs {
+		if r.Until.After(s.sessions[r.Sid]) {
+			s.sessions[r.Sid] = r.Until
+		}
 	}
 }
 
