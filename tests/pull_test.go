@@ -39,7 +39,7 @@ func TestPullResumesByCursor(t *testing.T) {
 	f := newFeed(t, app)
 	stop := start(t, ctx, reader.New(app, f, slog.New(slog.NewTextHandler(io.Discard, nil)), nil))
 	defer stop()
-	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}).Handler())
+	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}, nil).Handler())
 	defer srv.Close()
 	tok := sealToken(t, map[string]any{"resource": name})
 
@@ -87,7 +87,7 @@ func TestPullMatchesConditions(t *testing.T) {
 	f := newFeed(t, app)
 	stop := start(t, ctx, reader.New(app, f, slog.New(slog.NewTextHandler(io.Discard, nil)), nil))
 	defer stop()
-	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}).Handler())
+	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}, nil).Handler())
 	defer srv.Close()
 	tok := sealToken(t, map[string]any{"resource": name, "where": map[string]any{"eq": []string{"body", "in"}}})
 
@@ -168,14 +168,20 @@ func pull(t *testing.T, ctx context.Context, base, tok, after string, deadline t
 
 func sealToken(t *testing.T, subs ...map[string]any) string {
 	t.Helper()
+	return seal(t, map[string]any{
+		"iss": issuer, "sub": "u42", "sid": "s9", "exp": time.Now().Add(time.Hour).Unix(),
+		"payload": "raw", "subs": subs,
+	})
+}
+
+// seal encrypts claims under the test key, as the app makes its tokens.
+func seal(t *testing.T, claims map[string]any) string {
+	t.Helper()
 	enc, err := jose.NewEncrypter(jose.A256GCM, jose.Recipient{Algorithm: jose.DIRECT, Key: testKey}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := jwt.Encrypted(enc).Claims(map[string]any{
-		"iss": issuer, "sub": "u42", "sid": "s9", "exp": time.Now().Add(time.Hour).Unix(),
-		"payload": "raw", "subs": subs,
-	}).Serialize()
+	s, err := jwt.Encrypted(enc).Claims(claims).Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}

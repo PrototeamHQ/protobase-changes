@@ -25,6 +25,22 @@ func TestParseAcceptsTrailingWhitespace(t *testing.T) {
 	}
 }
 
+// withApp adds fields to the valid config's app.
+func withApp(fields string) string {
+	return strings.Replace(valid, `["/run/secrets/shop_key"]`, `["/run/secrets/shop_key"], `+fields, 1)
+}
+
+func TestParseStore(t *testing.T) {
+	for _, fields := range []string{
+		`"store": {"kind": "postgres", "url": "postgres://localhost/shop"}`,
+		`"store": {"kind": "sqlite", "path": "/var/lib/protobase-changes/shop.db"}, "functions_url": "http://shop.internal/api/functions"`,
+	} {
+		if _, err := Parse(strings.NewReader(withApp(fields))); err != nil {
+			t.Errorf("%s: %v", fields, err)
+		}
+	}
+}
+
 func TestParseRefuses(t *testing.T) {
 	cases := map[string]string{
 		"unknown field": `{"apps": [], "extra": 1}`,
@@ -42,6 +58,10 @@ func TestParseRefuses(t *testing.T) {
 		"trailing ]":    valid + `]`,
 		"trailing }":    valid + `}`,
 		"slot digit":    strings.Replace(valid, `"slot": "protobase_changes"`, `"slot": "123"`, 1),
+		"store kind":    withApp(`"store": {"kind": "mysql", "url": "x"}`),
+		"store url":     withApp(`"store": {"kind": "postgres", "path": "/tmp/x"}`),
+		"store both":    withApp(`"store": {"kind": "sqlite", "path": "/tmp/x", "url": "postgres://x"}`),
+		"functions url": withApp(`"functions_url": "shop.internal/api/functions"`),
 	}
 	for name, input := range cases {
 		if _, err := Parse(strings.NewReader(input)); err == nil {

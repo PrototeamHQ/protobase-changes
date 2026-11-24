@@ -46,7 +46,10 @@ type Feed struct {
 	started bool
 	// ready is whether the stream read past caughtUp, where the WAL ended when
 	// it connected: only then are the revocations in it all recorded.
-	ready    bool
+	ready bool
+	// readyCh is closed while the feed is ready, and replaced by an open one
+	// when a reconnect makes it fall behind again.
+	readyCh  chan struct{}
 	caughtUp pglogrepl.LSN
 	epoch    cursor.Epoch
 	// end is where the stream reached: the end of the newest transaction, or
@@ -62,6 +65,7 @@ func New(app config.App, ring keys.Ring, log *slog.Logger) (*Feed, error) {
 	return &Feed{
 		App: app, Keys: ring, Cursors: codec, Revoked: revoke.New(),
 		tail: tail.New[*Entry](app.TailTransactions), log: log.With("app", app.Name),
+		readyCh: make(chan struct{}),
 	}, nil
 }
 
@@ -83,7 +87,12 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 	f.started = true
 	f.epoch = epoch
 	f.caughtUp = caughtUp
+	wasReady := f.ready
 	f.ready = f.end >= caughtUp
+	if wasReady && !f.ready {
+		f.readyCh = make(chan struct{})
+	}
+	f.signalReady()
 	return f.end, nil
 }
 
@@ -92,6 +101,7 @@ func (f *Feed) Decoded(lsn pglogrepl.LSN) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ready = f.ready || (f.started && lsn >= f.caughtUp)
+	f.signalReady()
 }
 
 // Append takes in a committed transaction, first recording the sessions it revokes.
@@ -110,8 +120,30 @@ func (f *Feed) Append(tx *change.Transaction) {
 	at := cursor.Position{Epoch: f.epoch, LSN: tx.CommitLSN}
 	f.end = tx.EndLSN
 	f.ready = f.ready || f.end >= f.caughtUp
+	f.signalReady()
 	f.mu.Unlock()
 	f.tail.Append(&Entry{Tx: tx, Cursor: f.Cursors.Seal(at), ID: f.Cursors.ID(at)})
+}
+
+// signalReady closes readyCh once the feed is ready. Called with mu held.
+func (f *Feed) signalReady() {
+	if !f.ready {
+		return
+	}
+	select {
+	case <-f.readyCh:
+	default:
+		close(f.readyCh)
+	}
+}
+
+// Ready returns a channel that is closed while the stream has read all the
+// WAL there was when it last connected. A Head that fails with ErrNotReady
+// after taking it waits on it, then tries again.
+func (f *Feed) Ready() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.readyCh
 }
 
 // Head returns where the stream reached, for a consumer that starts live:

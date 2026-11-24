@@ -55,22 +55,27 @@ type claims struct {
 	} `json:"subs"`
 }
 
+// Decrypt opens a compact JWE of alg dir and enc A256GCM under any key of the
+// ring into each of out, as JSON claims. It reports whether a key opened it.
+func Decrypt(raw string, ring keys.Ring, out ...any) bool {
+	jwe, err := jwt.ParseEncrypted(raw, []jose.KeyAlgorithm{jose.DIRECT}, []jose.ContentEncryption{jose.A256GCM})
+	if err != nil {
+		return false
+	}
+	for _, key := range ring {
+		if jwe.Claims(key, out...) == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // Open decrypts a compact JWE of alg dir and enc A256GCM under any key of the
 // ring, and checks it was issued by issuer, names a session and is valid at now.
 func Open(raw string, ring keys.Ring, issuer string, now time.Time) (Token, error) {
-	jwe, err := jwt.ParseEncrypted(raw, []jose.KeyAlgorithm{jose.DIRECT}, []jose.ContentEncryption{jose.A256GCM})
-	if err != nil {
-		return Token{}, ErrInvalid
-	}
 	var std jwt.Claims
 	var own claims
-	opened := false
-	for _, key := range ring {
-		if jwe.Claims(key, &std, &own) == nil {
-			opened = true
-			break
-		}
-	}
+	opened := Decrypt(raw, ring, &std, &own)
 	// RFC 7519 wants now before exp, which the library's check lets equal.
 	if !opened || std.Expiry == nil || !now.Before(std.Expiry.Time()) ||
 		std.ValidateWithLeeway(jwt.Expected{Issuer: issuer, Time: now}, 0) != nil {

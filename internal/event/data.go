@@ -16,7 +16,7 @@ type Data struct {
 }
 
 // Change is one row change, sent once with every subscription of the token
-// it concerns. A thin payload holds the resource, operation and key; a raw one adds what the WAL states: the rows, the truncate options and
+// it concerns, or once as a named event without subscriptions. A thin payload holds the resource, operation and key; a raw one adds what the WAL states: the rows, the truncate options and
 // who made the change.
 type Change struct {
 	Resource  string           `json:"resource"`
@@ -28,7 +28,7 @@ type Change struct {
 	Cascade         bool            `json:"cascade,omitempty"`
 	RestartIdentity bool            `json:"restart_identity,omitempty"`
 	Actor           json.RawMessage `json:"actor,omitempty"`
-	Subscriptions   []match.Tag     `json:"subscriptions"`
+	Subscriptions   []match.Tag     `json:"subscriptions,omitempty"`
 }
 
 // Resource names a table as tokens list it: by name in the public schema,
