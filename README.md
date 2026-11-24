@@ -91,7 +91,7 @@ The token is a JWE, encrypted with AES-256-GCM under a key that the app, the rel
 - `payload` sets the shape of each change: `thin` for live queries, `raw` for the stored rows a replica needs.
 - `cursor` marks the snapshot the list was read from, so no change slips between the read and the subscription. Each notice carries a fresh cursor to resume from.
 - `where` combines the request's filter, `channel_id`, with the access rule, `tenant_id`. protobase-changes only ever sees plain conditions like these.
-- `subs` lists each resource by table name, or as `schema.table` outside the public schema. There is no wildcard: a full replica lists every resource, so a table added later is never granted by accident. <gap>A subscription with `where` is refused with 400 because the condition matcher is not implemented.</gap>
+- `subs` lists each resource by table name, or as `schema.table` outside the public schema. A table whose schema or name holds a dot is never sent, since its resource could name another table too. There is no wildcard: a full replica lists every resource, so a table added later is never granted by accident. <gap>A subscription with `where` is refused with 400 because the condition matcher is not implemented.</gap>
 
 Some rules need a subquery, such as "channels I belong to". The app turns the subquery's result into constants when it issues the token. Could that go stale? Yes. When a membership changes, the app calls `live.refresh({ user })`, and the token's expiry caps anything missed.
 

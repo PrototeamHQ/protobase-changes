@@ -2,6 +2,7 @@ package event
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
@@ -29,20 +30,25 @@ type Change struct {
 }
 
 // Resource names a table as tokens list it: by name in the public schema,
-// otherwise as schema.name.
-func Resource(t change.Table) string {
-	if t.Schema == "public" {
-		return t.Name
+// otherwise as schema.name. ok is false when the schema or the name holds a
+// dot, since its resource could then name another table too, such as public
+// "a.b" and schema "a" table "b": no token can read such a table.
+func Resource(t change.Table) (resource string, ok bool) {
+	if strings.Contains(t.Schema, ".") || strings.Contains(t.Name, ".") {
+		return "", false
 	}
-	return t.Schema + "." + t.Name
+	if t.Schema == "public" {
+		return t.Name, true
+	}
+	return t.Schema + "." + t.Name, true
 }
 
 func data(tx *change.Transaction, tok token.Token) Data {
 	actors := actors(tx)
 	d := Data{Changes: []Change{}}
 	for i, c := range tx.Changes {
-		resource := Resource(c.Table)
-		if !tok.Resources[resource] {
+		resource, ok := Resource(c.Table)
+		if !ok || !tok.Resources[resource] {
 			continue
 		}
 		out := Change{Resource: resource, Operation: c.Operation, Key: values(c.Key)}

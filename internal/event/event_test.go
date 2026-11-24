@@ -84,3 +84,16 @@ func TestPositionCarriesOnlyTheCursor(t *testing.T) {
 		t.Fatalf("position events %+v %+v", a, b)
 	}
 }
+
+func TestTablesWithADotAreNeverRead(t *testing.T) {
+	text := change.Value{Kind: change.Text, Text: "1"}
+	e := &feed.Entry{Tx: &change.Transaction{Changes: []change.Change{
+		{Table: change.Table{Schema: "public", Name: "audit.log"}, Operation: change.Insert, Key: change.Row{"id": text}},
+		{Table: change.Table{Schema: "a.b", Name: "c"}, Operation: change.Insert, Key: change.Row{"id": text}},
+		{Table: change.Table{Schema: "a", Name: "b.c"}, Operation: change.Insert, Key: change.Row{"id": text}},
+	}}}
+	tok := token.Token{Payload: token.Raw, Resources: map[string]bool{"audit.log": true, "a.b.c": true}}
+	if got, ok := Transaction("s", e, tok); ok {
+		t.Fatalf("read a table whose resource names another: %+v", got.Data)
+	}
+}
