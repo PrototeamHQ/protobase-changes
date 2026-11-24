@@ -11,8 +11,12 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
 )
 
-// errUnknownApp means the path names no app this service follows.
-var errUnknownApp = errors.New("unknown app")
+var (
+	// errUnknownApp means the path names no app this service follows.
+	errUnknownApp = errors.New("unknown app")
+	// errTooManyConnections means the app has as many consumers as its quota allows.
+	errTooManyConnections = errors.New("too many connections")
+)
 
 // fail answers a request that cannot stream with the status its error
 // stands for and a fixed message, never the error's own text.
@@ -28,6 +32,8 @@ func status(err error) (int, string) {
 	switch {
 	case errors.Is(err, errUnknownApp):
 		return http.StatusNotFound, "unknown app"
+	case errors.Is(err, errTooManyConnections):
+		return http.StatusTooManyRequests, "the app has as many open connections as its quota allows"
 	case errors.Is(err, token.ErrInvalid):
 		return http.StatusUnauthorized, "invalid token"
 	case errors.Is(err, stream.ErrExpired):

@@ -29,6 +29,17 @@ type App struct {
 	// FunctionsURL is where the app's API functions are served, which
 	// function destinations call by name.
 	FunctionsURL string `json:"functions_url"`
+	// Quotas bound what the app may take of a process that serves many apps.
+	Quotas Quotas `json:"quotas"`
+}
+
+// Quotas bound one app's share of the process; a quota left out is unlimited.
+type Quotas struct {
+	// ChangesPerSecond bounds the row changes the app's stream takes in per
+	// second, a second's worth at once. Postgres keeps the WAL meanwhile.
+	ChangesPerSecond *int `json:"changes_per_second"`
+	// Connections bounds the consumers pulling the app's changes at once.
+	Connections *int `json:"connections"`
 }
 
 // StoreKind names the database a store keeps its state in.
@@ -112,6 +123,12 @@ func (c Config) validate() error {
 		}
 		if app.FunctionsURL != "" && !absoluteHTTP(app.FunctionsURL) {
 			return fmt.Errorf("config: app %q functions_url must be an absolute http or https URL", app.Name)
+		}
+		if q := app.Quotas.ChangesPerSecond; q != nil && *q < 1 {
+			return fmt.Errorf("config: app %q quotas.changes_per_second must be at least 1", app.Name)
+		}
+		if q := app.Quotas.Connections; q != nil && *q < 1 {
+			return fmt.Errorf("config: app %q quotas.connections must be at least 1", app.Name)
 		}
 	}
 	return nil

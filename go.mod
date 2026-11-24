@@ -8,6 +8,8 @@ require (
 	github.com/jackc/pglogrepl v0.0.0-20261111174325-d50336b09c47
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/standard-webhooks/standard-webhooks/libraries v1.3.0
+	golang.org/x/sync v0.24.0
+	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.63.0
 )
 
@@ -21,7 +23,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	modernc.org/libc v1.80.1 // indirect

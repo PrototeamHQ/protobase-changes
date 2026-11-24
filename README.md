@@ -147,7 +147,8 @@ The config lists every app database to follow; unknown fields stop startup.
       "issuer": "https://shop.example",
       "key_files": ["/run/secrets/shop_changes_key"],
       "store": { "kind": "postgres", "url": "postgres://changes@db.internal/shop" },
-      "functions_url": "http://shop.internal/api/functions"
+      "functions_url": "http://shop.internal/api/functions",
+      "quotas": { "changes_per_second": 5000, "connections": 200 }
     }
   ]
 }
@@ -163,6 +164,9 @@ The config lists every app database to follow; unknown fields stop startup.
 - `key_files`: files that each hold one 32-byte key the app shares, base64url without padding. The first one encrypts cursors; every one opens tokens and cursors, so a new key goes first and the old one stays listed until what it sealed has expired.
 - `store`: where [destinations](#destinations) and their cursors are kept, `{"kind": "postgres", "url": ...}` for a `changes` schema in that database, or `{"kind": "sqlite", "path": ...}` for a file. Without it the app has no destinations.
 - `functions_url`: where the app serves its API functions, which [function destinations](#functions) call by name.
+- `quotas`: bounds on the app's share of a process that serves many apps, each unlimited when left out:
+  - `changes_per_second`: the row changes its stream takes in per second, a second's worth at once. An app writing faster falls behind on its own and the other apps keep their pace. Postgres keeps its WAL meanwhile, so nothing is lost while the lag stays under `max_slot_wal_keep_size`; past it, the slot is invalidated and the app's consumers resync, as [Running without it](#running-without-it) says.
+  - `connections`: the consumers pulling its changes at once, over every transport; one more gets `429`.
 
 ### Many apps
 
@@ -263,6 +267,7 @@ The app revokes a session with a `protobase_revoke` message in the transaction t
 - `401`: no valid token for the app, an expired one, or a revoked session. Every invalid token gets the same answer.
 - `404`: no app of that name.
 - `410`: the cursor can no longer resume.
+- `429`: the app has as many open connections as its `connections` quota allows.
 - `503`: the app's stream has not yet read all the WAL there was when it connected, so revocations in it may still be unknown.
 
 ## Destinations
