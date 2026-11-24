@@ -23,14 +23,23 @@ var migrations = []string{
 	CREATE INDEX revocations_exp ON changes.revocations (exp)`,
 }
 
+// migrateLock is the key of the advisory lock every Migrate of an app
+// database takes, so two at once run one after the other.
+const migrateLock int64 = 0x7062635f6d696772
+
 // Migrate applies the migrations the app database lacks, in one transaction,
-// so a failing one leaves it as it was.
+// so a failing one leaves it as it was. It holds migrateLock until it
+// commits: a second Migrate waits, then finds the schema and version the
+// first committed, instead of failing on a schema it could not see yet.
 func Migrate(ctx context.Context, conn *pgx.Conn) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", migrateLock); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS changes"); err != nil {
 		return err
 	}
