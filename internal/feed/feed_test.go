@@ -259,3 +259,26 @@ func TestResetMakesTheFeedNotReadyUntilResumed(t *testing.T) {
 		t.Fatalf("head after resuming the new slot: %v", err)
 	}
 }
+
+func TestLostSlotMakesTheFeedNotReadyUntilResumed(t *testing.T) {
+	f := newFeed(t)
+	if _, err := f.Resume(epoch, 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	f.Lost()
+	if _, err := f.Head(); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("head after a lost slot: %v, want ErrNotReady", err)
+	}
+	select {
+	case <-f.Ready():
+		t.Fatal("ready after a lost slot")
+	default:
+	}
+	f.Reset(500)
+	if _, err := f.Resume(epoch, 500, 500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Head(); err != nil {
+		t.Fatalf("head after resuming the new slot: %v", err)
+	}
+}

@@ -50,6 +50,9 @@ type Sink interface {
 	Append(tx *change.Transaction)
 	// Decoded reports that the server sent every transaction committed before lsn.
 	Decoded(lsn pglogrepl.LSN)
+	// Lost reports that Postgres invalidated the slot, before it is created
+	// again: the sink serves nothing until the next Resume.
+	Lost()
 	// Revoke records the revocations committed before the stream's start,
 	// read from revoke.Table before the stream resumes.
 	Revoke(rs []revoke.Revocation)
@@ -117,11 +120,17 @@ func (r *Reader) Run(ctx context.Context) error {
 		return err
 	}
 	s, err := slot.Ensure(ctx, conn, r.app.Slot)
+	if errors.Is(err, slot.ErrLost) {
+		// The lost WAL may hold revocations: nothing serves until the new
+		// slot's stream resumes, after they were loaded from revoke.Table.
+		r.sink.Lost()
+		s, err = slot.Recreate(ctx, conn, r.app.Slot)
+		if err == nil {
+			r.log.Warn("the slot was invalidated and is created again; earlier cursors can no longer resume", "slot", s.Name, "lsn", s.Confirmed.String())
+		}
+	}
 	if err != nil {
 		return err
-	}
-	if s.Recreated {
-		r.log.Warn("the slot was invalidated and is created again; earlier cursors can no longer resume", "slot", s.Name, "lsn", s.Confirmed.String())
 	}
 	if s.Snapshot != "" {
 		r.sink.Reset(s.Confirmed)

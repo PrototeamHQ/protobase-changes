@@ -2,6 +2,7 @@ package slot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pglogrepl"
@@ -19,16 +20,17 @@ type Slot struct {
 	// Snapshot is set only when the slot was just created: it names the
 	// exported snapshot that shows the database exactly at Confirmed.
 	Snapshot string
-	// Recreated is set when Postgres had invalidated the slot, such as at
-	// max_slot_wal_keep_size, and Ensure created it again.
-	Recreated bool
 }
+
+// ErrLost means Postgres invalidated the slot, such as at
+// max_slot_wal_keep_size, so its WAL is gone: Recreate creates it again.
+var ErrLost = errors.New("invalidated by Postgres, so its WAL is lost")
 
 // Ensure reuses the slot when it exists, and creates it with an exported
 // snapshot when it does not. A slot Postgres invalidated holds no position
-// any longer, so Ensure drops it and creates it again. A slot of another
-// plugin or database is never dropped, since that would lose its position:
-// Ensure fails instead.
+// any longer, so Ensure fails with ErrLost, for the caller to stop serving
+// before it calls Recreate. A slot of another plugin or database is never
+// dropped, since that would lose its position: Ensure fails instead.
 func Ensure(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {
 	rows, err := query(ctx, conn, fmt.Sprintf(
 		"SELECT slot_type, plugin, database = current_database(), confirmed_flush_lsn, wal_status FROM pg_replication_slots WHERE slot_name = %s",
@@ -47,10 +49,8 @@ func Ensure(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error)
 		return Slot{}, fmt.Errorf("slot %s exists on another database", name)
 	}
 	// Postgres reports every invalidation, whatever its reason, as lost.
-	// The revocations in the WAL it lost are in revoke.Table, which the
-	// reader loads in the new slot's exported snapshot.
 	if string(row[4]) == "lost" {
-		return recreate(ctx, conn, name)
+		return Slot{}, fmt.Errorf("slot %s: %w", name, ErrLost)
 	}
 	confirmed, err := pglogrepl.ParseLSN(string(row[3]))
 	if err != nil {
@@ -59,13 +59,13 @@ func Ensure(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error)
 	return Slot{Name: name, Confirmed: confirmed}, nil
 }
 
-func recreate(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {
+// Recreate drops a slot Postgres invalidated and creates it again with an
+// exported snapshot.
+func Recreate(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {
 	if err := Drop(ctx, conn, name); err != nil {
 		return Slot{}, err
 	}
-	s, err := create(ctx, conn, name)
-	s.Recreated = true
-	return s, err
+	return create(ctx, conn, name)
 }
 
 func create(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {

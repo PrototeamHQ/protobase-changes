@@ -122,6 +122,20 @@ func (f *Feed) Reset(from pglogrepl.LSN) {
 	f.start = from
 	f.tail.Reset(from)
 	f.end = from
+	f.notReady()
+}
+
+// Lost marks that Postgres invalidated the slot: the revocations in the WAL
+// it lost are unknown until they are loaded through Revoke, so the feed is
+// not ready, and its consumers get ErrNotReady, until a stream resumes.
+func (f *Feed) Lost() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.notReady()
+}
+
+// notReady makes the feed not ready. Called with mu held.
+func (f *Feed) notReady() {
 	if f.ready {
 		f.ready = false
 		f.readyCh = make(chan struct{})
