@@ -3,6 +3,7 @@ module github.com/PrototeamHQ/protobase-changes
 go 1.27.4
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/jackc/pglogrepl v0.0.0-20261111174325-d50336b09c47
 	github.com/jackc/pgx/v5 v5.13.0
