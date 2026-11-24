@@ -129,3 +129,18 @@ func TestResumeDestination(t *testing.T) {
 		}
 	}
 }
+
+// brokenBody fails like a chunked body that breaks off.
+type brokenBody struct{}
+
+func (brokenBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestPutDestinationsRefusesAnUnreadableBody(t *testing.T) {
+	fx := newFixture(t)
+	s := New(map[string]*feed.Feed{"shop": fx.feed}, map[string]*destination.Hub{"shop": {}})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPut, DestinationsPath("shop"), brokenBody{}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("answered %d, want 400", rec.Code)
+	}
+}

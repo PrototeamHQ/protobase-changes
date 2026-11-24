@@ -17,6 +17,8 @@ var (
 	errNoStore = errors.New("the app keeps no destinations")
 	// errTooLarge means a set token is over maxSetToken.
 	errTooLarge = errors.New("the token is too large")
+	// errBody means the request body could not be read, such as a broken chunk.
+	errBody = errors.New("the body could not be read")
 )
 
 // putDestinations replaces the app's destinations with those of the token
@@ -30,7 +32,7 @@ func (s *Server) putDestinations(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxSetToken+1))
 	if err != nil {
-		// The request broke off; nobody reads an answer.
+		fail(w, errBody)
 		return
 	}
 	if len(body) > maxSetToken {

@@ -50,6 +50,8 @@ func status(err error) (int, string) {
 		return http.StatusConflict, "a set issued later is kept"
 	case errors.Is(err, destination.ErrUnknown):
 		return http.StatusNotFound, "unknown destination"
+	case errors.Is(err, errBody):
+		return http.StatusBadRequest, "the body could not be read"
 	case errors.Is(err, errTooLarge):
 		return http.StatusRequestEntityTooLarge, "the token is too large"
 	case errors.Is(err, feed.ErrNotReady):
