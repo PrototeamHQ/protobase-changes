@@ -120,3 +120,20 @@ func TestNotReadyUntilTheWALAtConnectIsRead(t *testing.T) {
 		t.Fatalf("not ready once a transaction ended past 300: %v", err)
 	}
 }
+
+func TestReadyClosesOnceCaughtUp(t *testing.T) {
+	f := newFeed(t)
+	f.Resume(epoch, 100, 200)
+	select {
+	case <-f.Ready():
+		t.Fatal("ready before reading up to where the WAL ended")
+	default:
+	}
+	f.Decoded(200)
+	f.Decoded(300)
+	select {
+	case <-f.Ready():
+	default:
+		t.Fatal("not ready after reading up to where the WAL ended")
+	}
+}
