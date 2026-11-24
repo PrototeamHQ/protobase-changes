@@ -323,6 +323,7 @@ func TestConnectionsQuota(t *testing.T) {
 	fx := newFixtureWith(t, config.Quotas{Connections: &limit})
 	tok := seal(t, claims(nil))
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fx.url+ChangesPath("shop", ""), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -333,6 +334,7 @@ func TestConnectionsQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer open.Body.Close()
 	if open.StatusCode != http.StatusOK {
 		t.Fatalf("first stream answered %d", open.StatusCode)
 	}
