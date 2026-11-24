@@ -138,6 +138,8 @@ func TestDeliversFromTheDatabase(t *testing.T) {
 		<-hubDone
 		t.Fatal("timed out waiting for the hub to load")
 	}
+	// Registered only once the hub loaded: t.Fatal above ends the test
+	// before this defer exists, so hubDone is read once either way.
 	defer func() {
 		stopHub()
 		if err := <-hubDone; !errors.Is(err, context.Canceled) {
