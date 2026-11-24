@@ -35,10 +35,10 @@ func tx(lsn pglogrepl.LSN, messages ...change.Message) *change.Transaction {
 
 func TestResumeStartsAfterWhatIsHeld(t *testing.T) {
 	f := newFeed(t)
-	if _, err := f.Epoch(); err != ErrNotStarted {
+	if _, err := f.Head(); err != ErrNotReady {
 		t.Fatalf("epoch before start: %v", err)
 	}
-	if start, err := f.Resume(epoch, 100); err != nil || start != 100 {
+	if start, err := f.Resume(epoch, 100, 100); err != nil || start != 100 {
 		t.Fatalf("first resume %v %v", start, err)
 	}
 	if _, ok := f.Since(99); ok {
@@ -48,17 +48,17 @@ func TestResumeStartsAfterWhatIsHeld(t *testing.T) {
 	if head, err := f.Head(); err != nil || head != (cursor.Position{Epoch: epoch, LSN: 128}) {
 		t.Fatalf("head %+v %v, want after the held transaction", head, err)
 	}
-	if start, err := f.Resume(epoch, 100); err != nil || start != 128 {
+	if start, err := f.Resume(epoch, 100, 100); err != nil || start != 128 {
 		t.Fatalf("second resume %v %v, want after the held transaction", start, err)
 	}
-	if _, err := f.Resume(cursor.Epoch{SystemID: 1, Timeline: 2}, 100); err == nil {
+	if _, err := f.Resume(cursor.Epoch{SystemID: 1, Timeline: 2}, 100, 100); err == nil {
 		t.Fatal("resumed on another timeline")
 	}
 }
 
 func TestAppendSealsTheCursor(t *testing.T) {
 	f := newFeed(t)
-	if _, err := f.Resume(epoch, 100); err != nil {
+	if _, err := f.Resume(epoch, 100, 100); err != nil {
 		t.Fatal(err)
 	}
 	f.Append(tx(120))
@@ -77,7 +77,7 @@ func TestAppendSealsTheCursor(t *testing.T) {
 
 func TestAppendRecordsRevocations(t *testing.T) {
 	f := newFeed(t)
-	if _, err := f.Resume(epoch, 100); err != nil {
+	if _, err := f.Resume(epoch, 100, 100); err != nil {
 		t.Fatal(err)
 	}
 	exp := time.Now().Add(time.Hour).Unix()
@@ -90,5 +90,33 @@ func TestAppendRecordsRevocations(t *testing.T) {
 	}
 	if _, ok := f.Since(100); !ok {
 		t.Fatal("a malformed revocation stopped the transaction")
+	}
+}
+
+func TestNotReadyUntilTheWALAtConnectIsRead(t *testing.T) {
+	f := newFeed(t)
+	if _, err := f.Resume(epoch, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	f.Append(tx(120))
+	f.Decoded(150)
+	if _, err := f.Head(); err != ErrNotReady {
+		t.Fatalf("ready at 150 before the WAL at connect, 200, was read: %v", err)
+	}
+	f.Decoded(200)
+	if _, err := f.Head(); err != nil {
+		t.Fatalf("not ready once read up to 200: %v", err)
+	}
+
+	// Each new connection waits again for what its WAL held.
+	if _, err := f.Resume(epoch, 100, 300); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Head(); err != ErrNotReady {
+		t.Fatalf("ready right after reconnecting: %v", err)
+	}
+	f.Append(tx(300))
+	if _, err := f.Head(); err != nil {
+		t.Fatalf("not ready once a transaction ended past 300: %v", err)
 	}
 }

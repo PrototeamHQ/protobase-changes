@@ -231,7 +231,7 @@ The app revokes a session with a `protobase_revoke` message in the transaction t
 - `401`: no valid token for the app, an expired one, or a revoked session. Every invalid token gets the same answer.
 - `404`: no app of that name.
 - `410`: the cursor can no longer resume.
-- `503`: the app's stream has not started yet.
+- `503`: the app's stream has not yet read all the WAL there was when it connected, so revocations in it may still be unknown.
 
 ## Running without it
 

@@ -31,7 +31,7 @@ func newFeed(t *testing.T, size int) *feed.Feed {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Resume(epoch, 100); err != nil {
+	if _, err := f.Resume(epoch, 100, 100); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -255,7 +255,7 @@ func TestNotStarted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(f, tok(), "", time.Now); !errors.Is(err, feed.ErrNotStarted) {
+	if _, err := Open(f, tok(), "", time.Now); !errors.Is(err, feed.ErrNotReady) {
 		t.Fatalf("got %v", err)
 	}
 }

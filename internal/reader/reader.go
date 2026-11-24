@@ -39,8 +39,11 @@ type SnapshotHook func(ctx context.Context, s Snapshot) error
 type Sink interface {
 	// Resume returns where a stream of epoch starts, given the slot's
 	// position: after what the sink already holds, so it gets no duplicates.
-	Resume(epoch cursor.Epoch, from pglogrepl.LSN) (pglogrepl.LSN, error)
+	// caughtUp is where the server's WAL ended when the stream connected.
+	Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogrepl.LSN, error)
 	Append(tx *change.Transaction)
+	// Decoded reports that the server sent every transaction committed before lsn.
+	Decoded(lsn pglogrepl.LSN)
 }
 
 type Reader struct {
@@ -81,7 +84,7 @@ func (r *Reader) Run(ctx context.Context) error {
 	if err := slot.CheckPublication(ctx, conn, r.app.Publication); err != nil {
 		return err
 	}
-	epoch, err := identify(ctx, conn)
+	epoch, caughtUp, err := identify(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -99,7 +102,7 @@ func (r *Reader) Run(ctx context.Context) error {
 		}
 	}
 
-	start, err := r.sink.Resume(epoch, s.Confirmed)
+	start, err := r.sink.Resume(epoch, s.Confirmed, caughtUp)
 	if err != nil {
 		return err
 	}
@@ -117,17 +120,18 @@ func (r *Reader) Run(ctx context.Context) error {
 	return r.stream(ctx, conn, start)
 }
 
-// identify returns the epoch of the database's WAL: its cluster and timeline.
-func identify(ctx context.Context, conn *pgconn.PgConn) (cursor.Epoch, error) {
+// identify returns the epoch of the database's WAL, its cluster and
+// timeline, and where its WAL ends now.
+func identify(ctx context.Context, conn *pgconn.PgConn) (cursor.Epoch, pglogrepl.LSN, error) {
 	sys, err := pglogrepl.IdentifySystem(ctx, conn)
 	if err != nil {
-		return cursor.Epoch{}, fmt.Errorf("identify system: %w", err)
+		return cursor.Epoch{}, 0, fmt.Errorf("identify system: %w", err)
 	}
 	id, err := strconv.ParseUint(sys.SystemID, 10, 64)
 	if err != nil {
-		return cursor.Epoch{}, fmt.Errorf("identify system: system id %q: %w", sys.SystemID, err)
+		return cursor.Epoch{}, 0, fmt.Errorf("identify system: system id %q: %w", sys.SystemID, err)
 	}
-	return cursor.Epoch{SystemID: id, Timeline: uint32(sys.Timeline)}, nil
+	return cursor.Epoch{SystemID: id, Timeline: uint32(sys.Timeline)}, sys.XLogPos, nil
 }
 
 func connect(ctx context.Context, url string) (*pgconn.PgConn, error) {
@@ -199,6 +203,9 @@ func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool
 		if err != nil {
 			return 0, false, err
 		}
+		// A logical walsender's keepalive carries where it has decoded and
+		// sent up to, so every transaction committed before it has come.
+		r.sink.Decoded(ka.ServerWALEnd)
 		return ka.ServerWALEnd, ka.ReplyRequested, nil
 	case pglogrepl.XLogDataByteID:
 		xld, err := pglogrepl.ParseXLogData(data[1:])

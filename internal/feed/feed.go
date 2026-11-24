@@ -29,8 +29,9 @@ type Entry struct {
 
 func (e *Entry) Commit() pglogrepl.LSN { return e.Tx.CommitLSN }
 
-// ErrNotStarted means the feed's stream has not started, so its epoch is unknown.
-var ErrNotStarted = errors.New("the change stream has not started")
+// ErrNotReady means the feed's stream has not started, or has not yet read
+// all the WAL there was when it connected, so revocations in it may be missing.
+var ErrNotReady = errors.New("the change stream has not caught up")
 
 // Feed is one app's change stream as consumers read it. It is safe for concurrent use.
 type Feed struct {
@@ -43,7 +44,11 @@ type Feed struct {
 
 	mu      sync.Mutex
 	started bool
-	epoch   cursor.Epoch
+	// ready is whether the stream read past caughtUp, where the WAL ended when
+	// it connected: only then are the revocations in it all recorded.
+	ready    bool
+	caughtUp pglogrepl.LSN
+	epoch    cursor.Epoch
 	// end is where the stream reached: the end of the newest transaction, or
 	// where the stream started when none came yet.
 	end pglogrepl.LSN
@@ -63,7 +68,9 @@ func New(app config.App, ring keys.Ring, log *slog.Logger) (*Feed, error) {
 // Resume returns where the stream of epoch picks up when it starts from the
 // slot's position from: after what the feed holds. A stream of another epoch
 // than an earlier one fails, since the positions held would mean nothing in it.
-func (f *Feed) Resume(epoch cursor.Epoch, from pglogrepl.LSN) (pglogrepl.LSN, error) {
+// New consumers wait until the stream has read up to caughtUp, where the WAL
+// ended when it connected.
+func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogrepl.LSN, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.started && epoch != f.epoch {
@@ -75,7 +82,16 @@ func (f *Feed) Resume(epoch cursor.Epoch, from pglogrepl.LSN) (pglogrepl.LSN, er
 	}
 	f.started = true
 	f.epoch = epoch
+	f.caughtUp = caughtUp
+	f.ready = f.end >= caughtUp
 	return f.end, nil
+}
+
+// Decoded marks that the stream sent every transaction committed before lsn.
+func (f *Feed) Decoded(lsn pglogrepl.LSN) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ready = f.ready || (f.started && lsn >= f.caughtUp)
 }
 
 // Append takes in a committed transaction, first recording the sessions it revokes.
@@ -93,18 +109,9 @@ func (f *Feed) Append(tx *change.Transaction) {
 	f.mu.Lock()
 	at := cursor.Position{Epoch: f.epoch, LSN: tx.CommitLSN}
 	f.end = tx.EndLSN
+	f.ready = f.ready || f.end >= f.caughtUp
 	f.mu.Unlock()
 	f.tail.Append(&Entry{Tx: tx, Cursor: f.Cursors.Seal(at), ID: f.Cursors.ID(at)})
-}
-
-// Epoch returns the epoch of the running stream.
-func (f *Feed) Epoch() (cursor.Epoch, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.started {
-		return cursor.Epoch{}, ErrNotStarted
-	}
-	return f.epoch, nil
 }
 
 // Head returns where the stream reached, for a consumer that starts live:
@@ -112,8 +119,8 @@ func (f *Feed) Epoch() (cursor.Epoch, error) {
 func (f *Feed) Head() (cursor.Position, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.started {
-		return cursor.Position{}, ErrNotStarted
+	if !f.ready {
+		return cursor.Position{}, ErrNotReady
 	}
 	return cursor.Position{Epoch: f.epoch, LSN: f.end}, nil
 }

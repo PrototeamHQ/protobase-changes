@@ -45,7 +45,7 @@ func newFixture(t *testing.T) fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Resume(cursor.Epoch{SystemID: 1, Timeline: 1}, 100); err != nil {
+	if _, err := f.Resume(cursor.Epoch{SystemID: 1, Timeline: 1}, 100, 100); err != nil {
 		t.Fatal(err)
 	}
 	s := New(map[string]*feed.Feed{"shop": f})

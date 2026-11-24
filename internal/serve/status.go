@@ -39,8 +39,8 @@ func status(err error) (int, string) {
 		return http.StatusBadRequest, "invalid cursor"
 	case errors.Is(err, stream.ErrGone):
 		return http.StatusGone, "the changes after this cursor are no longer held; resync from a snapshot"
-	case errors.Is(err, feed.ErrNotStarted):
-		return http.StatusServiceUnavailable, "the change stream has not started"
+	case errors.Is(err, feed.ErrNotReady):
+		return http.StatusServiceUnavailable, "the change stream has not caught up"
 	}
 	return http.StatusInternalServerError, "internal error"
 }
