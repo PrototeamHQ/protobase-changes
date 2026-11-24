@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 )
 
@@ -22,6 +23,30 @@ type App struct {
 	Issuer string `json:"issuer"`
 	// KeyFiles hold the keys shared with the app: the first encrypts, every one decrypts.
 	KeyFiles []string `json:"key_files"`
+	// Store keeps the app's destinations and their cursors; without one the
+	// app has no destinations.
+	Store *Store `json:"store"`
+	// FunctionsURL is where the app's API functions are served, which
+	// function destinations call by name.
+	FunctionsURL string `json:"functions_url"`
+}
+
+// StoreKind names the database a store keeps its state in.
+type StoreKind string
+
+const (
+	Postgres StoreKind = "postgres"
+	SQLite   StoreKind = "sqlite"
+)
+
+// Store is where destination definitions and state are kept: a Postgres
+// database, in a changes schema, or a SQLite file.
+type Store struct {
+	Kind StoreKind `json:"kind"`
+	// URL is the Postgres database, for kind postgres.
+	URL string `json:"url"`
+	// Path is the SQLite file, for kind sqlite.
+	Path string `json:"path"`
 }
 
 type Config struct {
@@ -82,6 +107,30 @@ func (c Config) validate() error {
 		if len(app.KeyFiles) == 0 {
 			return fmt.Errorf("config: app %q lists no key_files", app.Name)
 		}
+		if err := app.Store.validate(); err != nil {
+			return fmt.Errorf("config: app %q %w", app.Name, err)
+		}
+		if app.FunctionsURL != "" && !absoluteHTTP(app.FunctionsURL) {
+			return fmt.Errorf("config: app %q functions_url must be an absolute http or https URL", app.Name)
+		}
 	}
 	return nil
+}
+
+func (s *Store) validate() error {
+	if s == nil {
+		return nil
+	}
+	switch {
+	case s.Kind == Postgres && s.URL != "" && s.Path == "":
+		return nil
+	case s.Kind == SQLite && s.Path != "" && s.URL == "":
+		return nil
+	}
+	return fmt.Errorf("store must be {\"kind\": \"postgres\", \"url\": ...} or {\"kind\": \"sqlite\", \"path\": ...}")
+}
+
+func absoluteHTTP(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
