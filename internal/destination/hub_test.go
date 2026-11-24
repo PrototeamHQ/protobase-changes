@@ -326,3 +326,36 @@ func TestANewSlotLeavesDestinationsGone(t *testing.T) {
 	f.Reset(500)
 	eventually(t, "the destination to be gone", func() bool { s, _ := store.state("orders-hook"); return s.Status == Gone })
 }
+
+func TestRunAgainSavesTheStateTheLastRunCouldNot(t *testing.T) {
+	f := newFeed(t, 2)
+	rc := newReceiver(t, ok)
+	store := newMemStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store.PutDefinitions(ctx, "shop", setToken(t, now.Unix(), hook(rc.server.URL)))
+	store.PutState(ctx, "shop", "orders-hook", State{Position: positionAt(100), Status: Active})
+	for i := range 3 {
+		order(f, pglogrepl.LSN(120+i), "1", "", "open")
+	}
+	h, err := NewHub(ctx, f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The destination fell behind the feed, and saving it as gone fails.
+	store.failPuts = 1
+	if err := h.Run(ctx); err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("run ended with %v, want the store's failure", err)
+	}
+	if s, _ := store.state("orders-hook"); s.Status != Active {
+		t.Fatalf("stored %v before the run again, want the failed save not stored", s.Status)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+	eventually(t, "the destination stored as gone", func() bool { s, _ := store.state("orders-hook"); return s.Status == Gone })
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second run ended with %v", err)
+	}
+}
