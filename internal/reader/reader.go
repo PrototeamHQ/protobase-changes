@@ -79,7 +79,10 @@ func (r *Reader) Run(ctx context.Context) error {
 	r.Confirm(s.Confirmed)
 	if s.Snapshot != "" && r.onSnapshot != nil {
 		if err := r.onSnapshot(ctx, Snapshot{Name: s.Snapshot, LSN: s.Confirmed}); err != nil {
-			return fmt.Errorf("initial snapshot: %w", err)
+			// A reused slot exports no snapshot, so the new slot goes again and
+			// the next run takes the initial state afresh. Nothing streamed from it.
+			dropErr := slot.Drop(context.Background(), conn, s.Name)
+			return fmt.Errorf("initial snapshot: %w", errors.Join(err, dropErr))
 		}
 	}
 
@@ -141,6 +144,8 @@ func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglog
 		switch m := msg.(type) {
 		case *pgproto3.ErrorResponse:
 			return pgconn.ErrorResponseToPgError(m)
+		case *pgproto3.NoticeResponse:
+			// Informational, such as logical decoding progress at a verbose client_min_messages.
 		case *pgproto3.CopyData:
 			pos, reply, err := r.copyData(dec, m.Data)
 			if err != nil {
@@ -191,7 +196,11 @@ func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool
 }
 
 // sendStatus reports what was received, but as flushed only what Confirm allowed.
+// Ending ctx interrupts a blocked write; Run then returns and closes the
+// connection, so a partly written frame is never followed by another.
 func (r *Reader) sendStatus(ctx context.Context, conn *pgconn.PgConn, received pglogrepl.LSN) error {
+	stop := context.AfterFunc(ctx, func() { conn.Conn().SetWriteDeadline(time.Unix(1, 0)) })
+	defer stop()
 	confirmed := pglogrepl.LSN(r.confirmed.Load())
 	err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: max(received, confirmed),
@@ -199,6 +208,9 @@ func (r *Reader) sendStatus(ctx context.Context, conn *pgconn.PgConn, received p
 		WALApplyPosition: confirmed,
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("send status: %w", err)
 	}
 	return nil

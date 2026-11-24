@@ -62,3 +62,11 @@ func create(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error)
 	}
 	return Slot{Name: name, Confirmed: confirmed, Snapshot: res.SnapshotName}, nil
 }
+
+// Drop removes a slot this connection does not stream from.
+func Drop(ctx context.Context, conn *pgconn.PgConn, name string) error {
+	if err := pglogrepl.DropReplicationSlot(ctx, conn, name, pglogrepl.DropReplicationSlotOptions{}); err != nil {
+		return fmt.Errorf("drop slot %s: %w", name, err)
+	}
+	return nil
+}
