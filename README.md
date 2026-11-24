@@ -101,13 +101,72 @@ Some rules need a subquery, such as "channels I belong to". The app turns the su
 **Production:** run it next to your app and the relay:
 
 ```sh
-protobase-changes --database "$DATABASE_URL" --archive s3://my-bucket/changes
+protobase-changes --config changes.json
 ```
 
 - **Download:** one binary or container image per GitHub release, like the relay.
-- **Postgres:** needs `wal_level = logical` and a role that may create a replication slot.
 - **State:** destination cursors go in a `changes` schema in your app's database.
 - **Archive:** any S3-compatible bucket or a local directory.
+
+### Configuration
+
+The config lists every app database to follow; unknown fields stop startup.
+
+```json
+{
+  "apps": [
+    {
+      "name": "shop",
+      "database_url": "postgres://changes@db.internal/shop",
+      "slot": "protobase_changes",
+      "publication": "protobase_changes",
+      "tail_transactions": 10000
+    }
+  ]
+}
+```
+
+- `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped.
+- `publication`: must exist before startup.
+- `tail_transactions`: how many of the latest committed transactions stay in memory.
+
+### Postgres requirements
+
+- `wal_level = logical`, which takes a server restart.
+- A role with `REPLICATION` that may connect to the app database.
+- A publication of every change of all tables, created once by a superuser:
+
+  ```sql
+  CREATE PUBLICATION protobase_changes FOR ALL TABLES;
+  ```
+
+  Startup stops when it is missing or skips inserts, updates, deletes or truncates. Once it exists, Postgres refuses UPDATE and DELETE on a table without a primary key or another replica identity.
+
+### Row changes
+
+Each committed transaction arrives once, in commit order, with its id, commit LSN, end LSN, commit time and row changes. A change names its table, operation (insert, update, delete or truncate), key, and the old and new rows as the WAL states them:
+
+- Values keep Postgres' text format, and a null stays distinct from a large value an update left unchanged, which the WAL does not repeat.
+- The old row is only the key, and only on a delete or an update that changes the key, unless the table has `REPLICA IDENTITY FULL`; then it is the whole row.
+- The key is the primary key or replica identity index. <gap>Tables with REPLICA IDENTITY FULL get no key because a primary key lookup is not implemented.</gap>
+
+A new slot exports a snapshot of the database exactly where its stream starts. <gap>The initial state cannot reach anyone because no consumer of the exported snapshot is implemented.</gap>
+
+The service never confirms its place in the slot by reading: Postgres keeps the WAL until the archive has stored it.
+
+### Logical messages
+
+The app writes transactional logical messages into the WAL, in the same transaction as its rows. Every message whose prefix starts with `protobase_` is attached to its transaction, in order, with its position among the row changes:
+
+```sql
+SELECT pg_logical_emit_message(true, 'protobase_actor', '{"sub":"u42","sid":"s9"}');
+SELECT pg_logical_emit_message(true, 'protobase_schema', '{"rename":{"table":"messages","from":"text","to":"body"}}');
+```
+
+- `protobase_actor`: who made the changes that follow it.
+- `protobase_schema`: a schema change, in order with the rows around it.
+
+The content passes on unchanged as bytes; the payloads above are examples. Messages with other prefixes are skipped. A non-transactional `protobase_` message is skipped with a warning, since it arrives even when its transaction rolls back.
 
 ## Running without it
 
