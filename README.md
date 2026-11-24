@@ -128,6 +128,7 @@ The config lists every app database to follow; unknown fields stop startup.
 
 - `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped.
 - `publication`: must exist before startup.
+- Slot and publication names are lowercase letters, digits and underscores, up to 63 characters, not starting with a digit.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
 
 ### Postgres requirements
@@ -150,7 +151,7 @@ Each committed transaction arrives once, in commit order, with its id, commit LS
 - The old row is only the key, and only on a delete or an update that changes the key, unless the table has `REPLICA IDENTITY FULL`; then it is the whole row.
 - The key is the primary key or replica identity index. <gap>Tables with REPLICA IDENTITY FULL get no key because a primary key lookup is not implemented.</gap>
 
-A new slot exports a snapshot of the database exactly where its stream starts. <gap>The initial state cannot reach anyone because no consumer of the exported snapshot is implemented.</gap>
+A new slot exports a snapshot of the database exactly where its stream starts; when taking it fails, the new slot is dropped so the next start takes it again. <gap>The initial state cannot reach anyone because no consumer of the exported snapshot is implemented.</gap>
 
 The service never confirms its place in the slot by reading: Postgres keeps the WAL until the archive has stored it.
 
