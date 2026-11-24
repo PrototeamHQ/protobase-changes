@@ -6,7 +6,8 @@ import (
 )
 
 const valid = `{"apps": [{"name": "shop", "database_url": "postgres://localhost/shop",
-  "slot": "protobase_changes", "publication": "protobase_changes", "tail_transactions": 1000}]}`
+  "slot": "protobase_changes", "publication": "protobase_changes", "tail_transactions": 1000,
+  "issuer": "https://shop.example", "key_files": ["/run/secrets/shop_key"]}], "listen": ":8080"}`
 
 func TestParseValid(t *testing.T) {
 	c, err := Parse(strings.NewReader(valid))
@@ -33,7 +34,10 @@ func TestParseRefuses(t *testing.T) {
 		"publication":   strings.Replace(valid, `"publication": "protobase_changes"`, `"publication": "a-b"`, 1),
 		"no url":        strings.Replace(valid, `"postgres://localhost/shop"`, `""`, 1),
 		"no tail":       strings.Replace(valid, `1000`, `0`, 1),
-		"twice":         `{"apps": [` + valid[10:len(valid)-2] + `, ` + valid[10:len(valid)-2] + `]}`,
+		"twice":         strings.Replace(valid, `}]`, `}, `+valid[10:strings.Index(valid, `}]`)+1]+`]`, 1),
+		"no listen":     strings.Replace(valid, `":8080"`, `""`, 1),
+		"no issuer":     strings.Replace(valid, `"https://shop.example"`, `""`, 1),
+		"no keys":       strings.Replace(valid, `["/run/secrets/shop_key"]`, `[]`, 1),
 		"trailing":      valid + `{}`,
 		"trailing ]":    valid + `]`,
 		"trailing }":    valid + `}`,

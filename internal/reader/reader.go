@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -13,10 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 
+	"github.com/PrototeamHQ/protobase-changes/internal/change"
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
+	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
 	"github.com/PrototeamHQ/protobase-changes/internal/decode"
 	"github.com/PrototeamHQ/protobase-changes/internal/slot"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
 )
 
 // statusInterval keeps the connection well inside the default wal_sender_timeout of 60s.
@@ -33,9 +35,17 @@ type Snapshot struct {
 // the snapshot, such as with slot.BeginSnapshot, not after reading the data.
 type SnapshotHook func(ctx context.Context, s Snapshot) error
 
+// Sink takes in the committed transactions a reader streams.
+type Sink interface {
+	// Resume returns where a stream of epoch starts, given the slot's
+	// position: after what the sink already holds, so it gets no duplicates.
+	Resume(epoch cursor.Epoch, from pglogrepl.LSN) (pglogrepl.LSN, error)
+	Append(tx *change.Transaction)
+}
+
 type Reader struct {
 	app        config.App
-	tail       *tail.Tail
+	sink       Sink
 	log        *slog.Logger
 	onSnapshot SnapshotHook
 	// confirmed is what status updates report as flushed. It only moves through
@@ -43,9 +53,9 @@ type Reader struct {
 	confirmed atomic.Uint64
 }
 
-// New makes a reader of app into t. onSnapshot may be nil.
-func New(app config.App, t *tail.Tail, log *slog.Logger, onSnapshot SnapshotHook) *Reader {
-	return &Reader{app: app, tail: t, log: log.With("app", app.Name), onSnapshot: onSnapshot}
+// New makes a reader of app into sink. onSnapshot may be nil.
+func New(app config.App, sink Sink, log *slog.Logger, onSnapshot SnapshotHook) *Reader {
+	return &Reader{app: app, sink: sink, log: log.With("app", app.Name), onSnapshot: onSnapshot}
 }
 
 // Confirm lets Postgres drop the WAL up to lsn, once what it holds is stored
@@ -59,9 +69,8 @@ func (r *Reader) Confirm(lsn pglogrepl.LSN) {
 	}
 }
 
-// Run streams committed transactions into the tail until ctx ends or the
-// connection fails. Run again after a failure resumes after the tail's newest
-// transaction, so the tail gets no duplicates.
+// Run streams committed transactions into the sink until ctx ends or the
+// connection fails. Run again after a failure resumes where the sink says.
 func (r *Reader) Run(ctx context.Context) error {
 	conn, err := connect(ctx, r.app.DatabaseURL)
 	if err != nil {
@@ -70,6 +79,10 @@ func (r *Reader) Run(ctx context.Context) error {
 	defer conn.Close(context.Background())
 
 	if err := slot.CheckPublication(ctx, conn, r.app.Publication); err != nil {
+		return err
+	}
+	epoch, err := identify(ctx, conn)
+	if err != nil {
 		return err
 	}
 	s, err := slot.Ensure(ctx, conn, r.app.Slot)
@@ -86,9 +99,9 @@ func (r *Reader) Run(ctx context.Context) error {
 		}
 	}
 
-	start := s.Confirmed
-	if newest := r.tail.Newest(); newest != nil {
-		start = newest.EndLSN
+	start, err := r.sink.Resume(epoch, s.Confirmed)
+	if err != nil {
+		return err
 	}
 	err = pglogrepl.StartReplication(ctx, conn, s.Name, start, pglogrepl.StartReplicationOptions{
 		Mode: pglogrepl.LogicalReplication,
@@ -102,6 +115,19 @@ func (r *Reader) Run(ctx context.Context) error {
 		return fmt.Errorf("start replication on slot %s: %w", s.Name, err)
 	}
 	return r.stream(ctx, conn, start)
+}
+
+// identify returns the epoch of the database's WAL: its cluster and timeline.
+func identify(ctx context.Context, conn *pgconn.PgConn) (cursor.Epoch, error) {
+	sys, err := pglogrepl.IdentifySystem(ctx, conn)
+	if err != nil {
+		return cursor.Epoch{}, fmt.Errorf("identify system: %w", err)
+	}
+	id, err := strconv.ParseUint(sys.SystemID, 10, 64)
+	if err != nil {
+		return cursor.Epoch{}, fmt.Errorf("identify system: system id %q: %w", sys.SystemID, err)
+	}
+	return cursor.Epoch{SystemID: id, Timeline: uint32(sys.Timeline)}, nil
 }
 
 func connect(ctx context.Context, url string) (*pgconn.PgConn, error) {
@@ -188,7 +214,7 @@ func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool
 			return 0, false, err
 		}
 		if tx != nil {
-			r.tail.Append(tx)
+			r.sink.Append(tx)
 		}
 		return xld.WALStart + pglogrepl.LSN(len(xld.WALData)), false, nil
 	}

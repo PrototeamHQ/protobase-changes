@@ -50,9 +50,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	log := slog.New(slog.NewJSONHandler(stderr, nil))
+	fs, err := feeds(cfg, log)
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = follow(ctx, cfg, slog.New(slog.NewJSONHandler(stderr, nil)))
+	err = follow(ctx, cfg, fs, log)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
