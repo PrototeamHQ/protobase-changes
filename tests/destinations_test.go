@@ -33,10 +33,11 @@ import (
 var webhookSecret = "whsec_" + base64.StdEncoding.EncodeToString([]byte("the destination test's secret"))
 
 // postgresStore opens a store in the test database on a fresh changes
-// schema, which it drops afterwards.
+// schema, which it drops afterwards, with the app database's part migrated.
 func postgresStore(t *testing.T, ctx context.Context, db *pgx.Conn, url string) *store.SQL {
 	t.Helper()
 	exec(t, ctx, db, "DROP SCHEMA IF EXISTS changes CASCADE")
+	migrateApp(t, ctx, db)
 	s, err := store.Open(config.Store{Kind: config.Postgres, URL: url})
 	if err != nil {
 		t.Fatal(err)

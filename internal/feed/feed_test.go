@@ -30,8 +30,8 @@ func newFeed(t *testing.T) *Feed {
 	return f
 }
 
-func tx(lsn pglogrepl.LSN, messages ...change.Message) *change.Transaction {
-	return &change.Transaction{CommitLSN: lsn, EndLSN: lsn + 8, Messages: messages}
+func tx(lsn pglogrepl.LSN) *change.Transaction {
+	return &change.Transaction{CommitLSN: lsn, EndLSN: lsn + 8}
 }
 
 func TestResumeStartsAfterWhatIsHeld(t *testing.T) {
@@ -101,16 +101,28 @@ func TestAppendRecordsRevocations(t *testing.T) {
 	if _, err := f.Resume(epoch, 100, 100); err != nil {
 		t.Fatal(err)
 	}
-	exp := time.Now().Add(time.Hour).Unix()
-	f.Append(tx(120,
-		change.Message{Prefix: revoke.Prefix, Content: []byte(`{"sid":"s9","exp":` + strconv.FormatInt(exp, 10) + `}`)},
-		change.Message{Prefix: revoke.Prefix, Content: []byte(`not json`)},
-		change.Message{Prefix: "protobase_actor", Content: []byte(`{"sid":"s8","exp":` + strconv.FormatInt(exp, 10) + `}`)}))
-	if !f.Revoked.Revoked("s9", time.Now()) || f.Revoked.Revoked("s8", time.Now()) {
+	exp := change.Value{Kind: change.Text, Text: strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)}
+	sid := func(s string) change.Value { return change.Value{Kind: change.Text, Text: s} }
+	tr := tx(120)
+	tr.Changes = []change.Change{
+		{Table: revoke.Table, Operation: change.Insert, NewRow: change.Row{"sid": sid("s9"), "exp": exp}},
+		{Table: revoke.Table, Operation: change.Insert, NewRow: change.Row{"sid": sid("s7")}},
+		{Table: change.Table{Schema: "public", Name: "revocations"}, Operation: change.Insert, NewRow: change.Row{"sid": sid("s8"), "exp": exp}},
+	}
+	f.Append(tr)
+	if !f.Revoked.Revoked("s9", time.Now()) || f.Revoked.Revoked("s8", time.Now()) || f.Revoked.Revoked("s7", time.Now()) {
 		t.Fatal("revoked the wrong sessions")
 	}
 	if _, ok := f.Since(100); !ok {
 		t.Fatal("a malformed revocation stopped the transaction")
+	}
+}
+
+func TestRevokeRecordsLoadedRevocations(t *testing.T) {
+	f := newFeed(t)
+	f.Revoke([]revoke.Revocation{{Sid: "s9", Until: time.Now().Add(time.Hour)}})
+	if !f.Revoked.Revoked("s9", time.Now()) {
+		t.Fatal("a loaded revocation did not revoke")
 	}
 }
 
@@ -221,7 +233,9 @@ func TestResetForgetsTheOldSlot(t *testing.T) {
 	}
 }
 
-func TestLostSlotMakesTheFeedNotReady(t *testing.T) {
+// A slot created anew lost WAL whose revocations the reader loads before the
+// stream resumes, so no consumer starts on the feed before.
+func TestResetMakesTheFeedNotReadyUntilResumed(t *testing.T) {
 	f := newFeed(t)
 	if _, err := f.Resume(epoch, 100, 100); err != nil {
 		t.Fatal(err)
@@ -229,13 +243,19 @@ func TestLostSlotMakesTheFeedNotReady(t *testing.T) {
 	if _, err := f.Head(); err != nil {
 		t.Fatal(err)
 	}
-	f.Lost()
+	f.Reset(500)
 	if _, err := f.Head(); !errors.Is(err, ErrNotReady) {
-		t.Fatalf("head after a lost slot: %v, want ErrNotReady", err)
+		t.Fatalf("head after a reset: %v, want ErrNotReady", err)
 	}
 	select {
 	case <-f.Ready():
-		t.Fatal("ready after a lost slot")
+		t.Fatal("ready after a reset")
 	default:
+	}
+	if _, err := f.Resume(epoch, 500, 500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Head(); err != nil {
+		t.Fatalf("head after resuming the new slot: %v", err)
 	}
 }

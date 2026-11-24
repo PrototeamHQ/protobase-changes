@@ -64,8 +64,7 @@ func TestPullResumesByCursor(t *testing.T) {
 		}
 	}
 
-	exec(t, ctx, db, fmt.Sprintf(`BEGIN; SELECT pg_logical_emit_message(true, 'protobase_revoke', '{"sid":"s9","exp":%d}');
-		INSERT INTO %s (id, body) VALUES (3, 'after'); COMMIT`, time.Now().Add(time.Hour).Unix(), name))
+	exec(t, ctx, db, fmt.Sprintf(`BEGIN; %s; INSERT INTO %s (id, body) VALUES (3, 'after'); COMMIT`, revocation(t, db, "s9"), name))
 	waitFor(t, ctx, f, func() bool { return f.Revoked.Revoked("s9", time.Now()) })
 	if _, status := pull(t, ctx, srv.URL, tok, got[1].Cursor, time.Now().Add(time.Second)); status != http.StatusUnauthorized {
 		t.Fatalf("revoked session got %d", status)

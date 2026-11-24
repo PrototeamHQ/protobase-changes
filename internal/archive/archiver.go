@@ -67,10 +67,10 @@ func (a *Archiver) Run(ctx context.Context) error {
 		}
 		// Everything committed before received is archived, so an app
 		// without changes does not hold the WAL other databases write.
-		if upTo := a.held(received); idle && upTo > idleConfirmed {
-			a.confirm.Confirm(upTo)
-			idleConfirmed = upTo
-			read = max(read, upTo)
+		if idle && received > idleConfirmed {
+			a.confirm.Confirm(received)
+			idleConfirmed = received
+			read = max(read, received)
 		}
 		if !time.Now().Before(nextMaintenance) {
 			retention := time.Duration(a.cfg.RetentionHours) * time.Hour
@@ -111,8 +111,7 @@ func (a *Archiver) segmentDuration() time.Duration {
 	return time.Duration(a.cfg.SegmentSeconds) * time.Second
 }
 
-// flush commits a segment table by table, then confirms the slot up to its
-// end, but never past a revocation whose tokens may still be valid.
+// flush commits a segment table by table, then confirms the slot up to its end.
 func (a *Archiver) flush(ctx context.Context, seg segment) error {
 	byTable, err := seg.tables()
 	if err != nil {
@@ -123,15 +122,6 @@ func (a *Archiver) flush(ctx context.Context, seg segment) error {
 			return fmt.Errorf("archive %s.%s: %w", t.Schema, t.Name, err)
 		}
 	}
-	a.confirm.Confirm(a.held(seg.end()))
+	a.confirm.Confirm(seg.end())
 	return nil
-}
-
-// held lowers lsn to the oldest revocation whose tokens may still be valid:
-// the feed holds revocations only in memory, so a restart must read them again.
-func (a *Archiver) held(lsn pglogrepl.LSN) pglogrepl.LSN {
-	if oldest, ok := a.feed.Revoked.Oldest(time.Now()); ok && oldest < lsn {
-		return oldest
-	}
-	return lsn
 }

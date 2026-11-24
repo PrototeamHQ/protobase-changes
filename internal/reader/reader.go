@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
 	"github.com/PrototeamHQ/protobase-changes/internal/decode"
+	"github.com/PrototeamHQ/protobase-changes/internal/revoke"
 	"github.com/PrototeamHQ/protobase-changes/internal/slot"
 )
 
@@ -48,8 +50,9 @@ type Sink interface {
 	Append(tx *change.Transaction)
 	// Decoded reports that the server sent every transaction committed before lsn.
 	Decoded(lsn pglogrepl.LSN)
-	// Lost reports that the slot was invalidated and is not created again.
-	Lost()
+	// Revoke records the revocations committed before the stream's start,
+	// read from revoke.Table before the stream resumes.
+	Revoke(rs []revoke.Revocation)
 }
 
 type Reader struct {
@@ -58,9 +61,6 @@ type Reader struct {
 	log        *slog.Logger
 	onSnapshot SnapshotHook
 	throttle   throttle
-	// RecreateLost lets Run create the slot again once Postgres invalidated
-	// it, losing the revocations in the WAL it lost; see slot.Ensure.
-	RecreateLost bool
 	// confirmed is what status updates report as flushed. It only moves through
 	// Confirm, so reading alone never lets Postgres drop WAL.
 	confirmed atomic.Uint64
@@ -116,10 +116,7 @@ func (r *Reader) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s, err := slot.Ensure(ctx, conn, r.app.Slot, r.RecreateLost)
-	if errors.Is(err, slot.ErrLost) {
-		r.sink.Lost()
-	}
+	s, err := slot.Ensure(ctx, conn, r.app.Slot)
 	if err != nil {
 		return err
 	}
@@ -130,6 +127,14 @@ func (r *Reader) Run(ctx context.Context) error {
 		r.sink.Reset(s.Confirmed)
 	}
 	r.Confirm(s.Confirmed)
+	if err := r.loadRevocations(ctx, s.Snapshot); err != nil {
+		if s.Snapshot == "" {
+			return err
+		}
+		// As for the initial snapshot below: the new slot goes, so the next
+		// run exports a snapshot again. Nothing streamed from it.
+		return errors.Join(err, slot.Drop(context.Background(), conn, s.Name))
+	}
 	if s.Snapshot != "" && r.onSnapshot != nil {
 		if err := r.onSnapshot(ctx, Snapshot{Name: s.Snapshot, LSN: s.Confirmed}); err != nil {
 			// A reused slot exports no snapshot, so the new slot goes again and
@@ -159,6 +164,37 @@ func (r *Reader) Run(ctx context.Context) error {
 		return fmt.Errorf("start replication on slot %s: %w", s.Name, err)
 	}
 	return r.stream(ctx, conn, start, interval)
+}
+
+// loadRevocations reads revoke.Table into the sink before the stream
+// resumes, so the revocations committed before the stream's start count even
+// when the WAL that held them is gone, such as for a slot created anew after
+// Postgres invalidated the old one. A new slot's exported snapshot shows
+// exactly what committed before its start. A reused slot's start was decoded
+// before, so everything that committed before it shows in a fresh snapshot.
+// Either way the stream brings every later revocation.
+func (r *Reader) loadRevocations(ctx context.Context, snapshot string) error {
+	db, err := pgx.Connect(ctx, r.app.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("connect to read revocations: %w", err)
+	}
+	defer db.Close(context.Background())
+	var tx pgx.Tx
+	if snapshot != "" {
+		tx, err = slot.BeginSnapshot(ctx, db, snapshot)
+	} else {
+		tx, err = db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	}
+	if err != nil {
+		return fmt.Errorf("read revocations: %w", err)
+	}
+	defer tx.Rollback(context.Background())
+	rs, err := revoke.Load(ctx, tx, time.Now())
+	if err != nil {
+		return err
+	}
+	r.sink.Revoke(rs)
+	return nil
 }
 
 // identify returns the epoch of the database's WAL, its cluster and

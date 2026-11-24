@@ -113,23 +113,27 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 // and never serve across one. A reader of everything the stream brings, such
 // as the archive, goes on from the new slot's start: the WAL between is gone
 // for good, and a fresh start would begin at the same place.
+//
+// The feed is not ready until the stream resumes from the new slot, after the
+// revocations the old slot's lost WAL held were loaded through Revoke.
 func (f *Feed) Reset(from pglogrepl.LSN) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.start = from
 	f.tail.Reset(from)
 	f.end = from
-}
-
-// Lost marks that the slot was invalidated and is not created again: the
-// revocations in the WAL it lost are unknown, so the feed is not ready, and
-// its consumers get ErrNotReady, until a stream resumes from a slot.
-func (f *Feed) Lost() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.ready {
 		f.ready = false
 		f.readyCh = make(chan struct{})
+	}
+}
+
+// Revoke records revocations read from revoke.Table rather than the stream,
+// such as those committed before the slot's start.
+func (f *Feed) Revoke(rs []revoke.Revocation) {
+	now := time.Now()
+	for _, r := range rs {
+		f.Revoked.Add(r.Sid, r.Until, now)
 	}
 }
 
@@ -144,12 +148,13 @@ func (f *Feed) Decoded(lsn pglogrepl.LSN) {
 // Append takes in a committed transaction, first recording the sessions it revokes.
 func (f *Feed) Append(tx *change.Transaction) {
 	now := time.Now()
-	for _, m := range tx.Messages {
-		if m.Prefix != revoke.Prefix {
-			continue
-		}
-		if err := f.Revoked.Add(m.Content, tx.CommitLSN, now); err != nil {
+	for _, c := range tx.Changes {
+		r, ok, err := revoke.FromChange(c)
+		if err != nil {
 			f.log.Warn("ignored a malformed revocation", "error", err.Error(), "lsn", tx.CommitLSN.String())
+		}
+		if ok {
+			f.Revoked.Add(r.Sid, r.Until, now)
 		}
 	}
 

@@ -2,7 +2,6 @@ package slot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pglogrepl"
@@ -25,15 +24,12 @@ type Slot struct {
 	Recreated bool
 }
 
-// ErrLost means Postgres invalidated the slot, and creating it again is not allowed.
-var ErrLost = errors.New("invalidated by Postgres, so its WAL is lost, and creating it again is off")
-
 // Ensure reuses the slot when it exists, and creates it with an exported
 // snapshot when it does not. A slot Postgres invalidated holds no position
-// any longer: with recreateLost, Ensure drops it and creates it again, and
-// otherwise fails with ErrLost. A slot of another plugin or database is never
-// dropped, since that would lose its position: Ensure fails instead.
-func Ensure(ctx context.Context, conn *pgconn.PgConn, name string, recreateLost bool) (Slot, error) {
+// any longer, so Ensure drops it and creates it again. A slot of another
+// plugin or database is never dropped, since that would lose its position:
+// Ensure fails instead.
+func Ensure(ctx context.Context, conn *pgconn.PgConn, name string) (Slot, error) {
 	rows, err := query(ctx, conn, fmt.Sprintf(
 		"SELECT slot_type, plugin, database = current_database(), confirmed_flush_lsn, wal_status FROM pg_replication_slots WHERE slot_name = %s",
 		literal(name)))
@@ -51,13 +47,9 @@ func Ensure(ctx context.Context, conn *pgconn.PgConn, name string, recreateLost 
 		return Slot{}, fmt.Errorf("slot %s exists on another database", name)
 	}
 	// Postgres reports every invalidation, whatever its reason, as lost.
+	// The revocations in the WAL it lost are in revoke.Table, which the
+	// reader loads in the new slot's exported snapshot.
 	if string(row[4]) == "lost" {
-		if !recreateLost {
-			return Slot{}, fmt.Errorf("slot %s: %w", name, ErrLost)
-		}
-		// The operator accepted, by turning recreateLost on, that revocations
-		// in the lost WAL go unread: nothing can know them, so no gate here
-		// could ever open. Off, the slot stays lost and the app unready.
 		return recreate(ctx, conn, name)
 	}
 	confirmed, err := pglogrepl.ParseLSN(string(row[3]))

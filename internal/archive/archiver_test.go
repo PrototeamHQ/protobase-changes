@@ -101,21 +101,18 @@ func TestArchiverRollsOverAtSegmentBytes(t *testing.T) {
 	}
 }
 
-// The feed holds revocations only in memory, so the slot stays at the
-// commit of one whose tokens may still be valid, for a restart to read again.
-func TestArchiverHoldsTheSlotAtALiveRevocation(t *testing.T) {
+// A revocation is a row of revoke.Table, which every stream loads before it
+// serves, so the slot need not keep its WAL.
+func TestArchiverConfirmsPastARevocation(t *testing.T) {
 	cfg := config.Archive{Namespace: "shop", SegmentBytes: 1, SegmentSeconds: 900, RetentionHours: 24}
 	tl, confirmed, _ := startArchiver(t, cfg)
-	cols := []change.Column{col("id", oidInt4, true), col("body", oidText, false)}
-	exp := time.Now().Add(time.Hour).Unix()
-	revocation := change.Message{Prefix: revoke.Prefix, Content: []byte(fmt.Sprintf(`{"sid":"s9","exp":%d}`, exp))}
-	tl.Append(tx(100, time.Now(), []change.Change{insert(cols, "1", "a")}, revocation))
-	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 100 {
-		t.Fatalf("confirmed %s, want the revocation's commit 0/64", lsn)
-	}
-	tl.Append(tx(200, time.Now(), []change.Change{insert(cols, "2", "b")}))
-	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 100 {
-		t.Fatalf("confirmed %s past a live revocation", lsn)
+	cols := []change.Column{col("sid", oidText, false), col("exp", oidInt8, false)}
+	exp := fmt.Sprint(time.Now().Add(time.Hour).Unix())
+	revocation := change.Change{Table: revoke.Table, Operation: change.Insert, Columns: cols,
+		NewRow: change.Row{"sid": text("s9"), "exp": text(exp)}}
+	tl.Append(tx(100, time.Now(), []change.Change{revocation}))
+	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 101 {
+		t.Fatalf("confirmed %s, want past the revocation", lsn)
 	}
 }
 

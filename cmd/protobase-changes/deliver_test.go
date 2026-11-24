@@ -44,7 +44,7 @@ func sqliteConfig(t *testing.T) (path string, cfg config.Config) {
 
 func TestAnUnmigratedStoreHoldsBackOnlyItsHub(t *testing.T) {
 	ctx := context.Background()
-	path, cfg := sqliteConfig(t)
+	_, cfg := sqliteConfig(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	fs, err := feeds(cfg, log)
 	if err != nil {
@@ -59,17 +59,13 @@ func TestAnUnmigratedStoreHoldsBackOnlyItsHub(t *testing.T) {
 	if err := hs["shop"].Run(ctx); !errors.Is(err, store.ErrSchema) {
 		t.Fatalf("ran on a store without its schema: %v", err)
 	}
-	closeStores(ss)
-
-	var out, errOut strings.Builder
-	if err := run([]string{"--config", path, "--migrate"}, &out, &errOut); err != nil {
-		t.Fatalf("migrate: %v %s", err, errOut.String())
-	}
-	ss, err = stores(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer closeStores(ss)
+
+	// The app databases --migrate applies first need Postgres; the
+	// integration tests cover them.
+	if err := migrateStores(ctx, ss); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 	hs = hubs(cfg, fs, ss, log)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
