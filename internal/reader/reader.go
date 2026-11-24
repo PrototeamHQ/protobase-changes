@@ -48,6 +48,8 @@ type Sink interface {
 	Append(tx *change.Transaction)
 	// Decoded reports that the server sent every transaction committed before lsn.
 	Decoded(lsn pglogrepl.LSN)
+	// Lost reports that the slot was invalidated and is not created again.
+	Lost()
 }
 
 type Reader struct {
@@ -100,6 +102,9 @@ func (r *Reader) Run(ctx context.Context) error {
 		return err
 	}
 	s, err := slot.Ensure(ctx, conn, r.app.Slot, r.RecreateLost)
+	if errors.Is(err, slot.ErrLost) {
+		r.sink.Lost()
+	}
 	if err != nil {
 		return err
 	}

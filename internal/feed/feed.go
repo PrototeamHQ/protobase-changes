@@ -121,6 +121,18 @@ func (f *Feed) Reset(from pglogrepl.LSN) {
 	f.end = from
 }
 
+// Lost marks that the slot was invalidated and is not created again: the
+// revocations in the WAL it lost are unknown, so the feed is not ready, and
+// its consumers get ErrNotReady, until a stream resumes from a slot.
+func (f *Feed) Lost() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ready {
+		f.ready = false
+		f.readyCh = make(chan struct{})
+	}
+}
+
 // Decoded marks that the stream sent every transaction committed before lsn.
 func (f *Feed) Decoded(lsn pglogrepl.LSN) {
 	f.mu.Lock()

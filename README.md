@@ -314,7 +314,7 @@ The app revokes a session with a `protobase_revoke` message in the transaction t
 - `404`: no app of that name.
 - `410`: the cursor can no longer resume.
 - `429`: the app has as many open connections as its `connections` quota allows.
-- `503`: the app's stream has not yet read all the WAL there was when it connected, so revocations in it may still be unknown.
+- `503`: the app's stream has not yet read all the WAL there was when it connected, or its slot was invalidated, so revocations in it may still be unknown.
 
 ## Destinations
 
@@ -417,7 +417,7 @@ A small app that needs no webhooks, replication or history can skip protobase-ch
 - **Not configured:** reads, writes and the API work as normal, and live pages poll. Push still works: the app calls the push sender directly once the notification row commits.
 - **Unavailable without it:** webhooks, event subscriptions, replication and history. `protobase doctor` names what to run. An app that declares them gets a startup warning, not a crash.
 
-An outage that outlasts that WAL limit invalidates the slot. The app's stream then stops, the other apps go on, and an app that has not streamed since the service started answers `503`. The WAL the slot lost may hold revocations the service never read, so a new slot alone would let a revoked session's token stream again until it expires. To recover, first make every token issued before the loss invalid: list a new key first in the app's `key_files`, drop the old ones, and put the destinations again under the new key; or wait until the longest-lived token issued before the loss has expired. Then drop the slot, and the service creates it again with a new exported snapshot.
+An outage that outlasts that WAL limit invalidates the slot. The app's stream then stops and the app answers `503`, while the other apps go on. The WAL the slot lost may hold revocations the service never read, so a new slot alone would let a revoked session's token stream again until it expires. To recover, first make every token issued before the loss invalid: list a new key first in the app's `key_files`, drop the old ones, and put the destinations again under the new key; or wait until the longest-lived token issued before the loss has expired. Then drop the slot, and the service creates it again with a new exported snapshot.
 
 With the environment variable `PCS_RECREATE_LOST_SLOTS=true` (`true` or `false`, default `false`), the service drops an invalidated slot and creates it again on its own, and revocations in the lost WAL go unread: the promise of [Revocation](#revocation) does not hold for sessions revoked there, whose tokens can stream from the new slot until they expire. <gap>A slot Postgres invalidated cannot be created again safely without manual work because keeping revocations beyond the WAL is not implemented.</gap>
 

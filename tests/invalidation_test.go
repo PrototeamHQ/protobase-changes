@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
+	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
 	"github.com/PrototeamHQ/protobase-changes/internal/slot"
 	"github.com/PrototeamHQ/protobase-changes/internal/stream"
@@ -68,6 +69,10 @@ func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 		}
 	})
 	stop()
+	// The revocations in the lost WAL are unknown, so the app answers 503.
+	if _, err := f.Head(); !errors.Is(err, feed.ErrNotReady) {
+		t.Fatalf("head with the slot lost: %v, want feed.ErrNotReady", err)
+	}
 
 	r := reader.New(app, f, log, nil)
 	r.RecreateLost = true

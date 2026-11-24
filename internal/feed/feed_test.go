@@ -2,6 +2,7 @@ package feed
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"strconv"
@@ -217,5 +218,24 @@ func TestResetForgetsTheOldSlot(t *testing.T) {
 	f.Append(tx(520))
 	if entries, ok := f.Since(500); !ok || len(entries) != 1 {
 		t.Fatalf("since 500: %v %v", entries, ok)
+	}
+}
+
+func TestLostSlotMakesTheFeedNotReady(t *testing.T) {
+	f := newFeed(t)
+	if _, err := f.Resume(epoch, 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Head(); err != nil {
+		t.Fatal(err)
+	}
+	f.Lost()
+	if _, err := f.Head(); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("head after a lost slot: %v, want ErrNotReady", err)
+	}
+	select {
+	case <-f.Ready():
+		t.Fatal("ready after a lost slot")
+	default:
 	}
 }

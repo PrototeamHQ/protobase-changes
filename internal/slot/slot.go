@@ -55,6 +55,9 @@ func Ensure(ctx context.Context, conn *pgconn.PgConn, name string, recreateLost 
 		if !recreateLost {
 			return Slot{}, fmt.Errorf("slot %s: %w", name, ErrLost)
 		}
+		// The operator accepted, by turning recreateLost on, that revocations
+		// in the lost WAL go unread: nothing can know them, so no gate here
+		// could ever open. Off, the slot stays lost and the app unready.
 		return recreate(ctx, conn, name)
 	}
 	confirmed, err := pglogrepl.ParseLSN(string(row[3]))
