@@ -2,11 +2,17 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net/url"
+	"time"
 )
 
 // MaxSegmentSeconds bounds how long a change waits in memory before it is archived.
 const MaxSegmentSeconds = 900
+
+// MaxRetentionHours is the longest retention a time.Duration holds: a longer
+// one would wrap around to a negative duration and expire everything.
+const MaxRetentionHours = math.MaxInt64 / int64(time.Hour)
 
 // Archive stores every change of an app in one Iceberg table per Postgres table.
 type Archive struct {
@@ -60,8 +66,8 @@ func (a Archive) validate(app string) error {
 	if a.SegmentSeconds < 1 || a.SegmentSeconds > MaxSegmentSeconds {
 		return fmt.Errorf("config: app %q archive segment_seconds must be 1 to %d", app, MaxSegmentSeconds)
 	}
-	if a.RetentionHours < 1 {
-		return fmt.Errorf("config: app %q archive retention_hours must be at least 1", app)
+	if a.RetentionHours < 1 || int64(a.RetentionHours) > MaxRetentionHours {
+		return fmt.Errorf("config: app %q archive retention_hours must be 1 to %d", app, MaxRetentionHours)
 	}
 	return a.Catalog.validate(app)
 }

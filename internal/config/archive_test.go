@@ -31,6 +31,13 @@ func TestParseSQLArchive(t *testing.T) {
 	}
 }
 
+func TestParseLongestRetention(t *testing.T) {
+	input := strings.Replace(archived, `"retention_hours": 168`, `"retention_hours": 2562047`, 1)
+	if _, err := Parse(strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseRefusesArchive(t *testing.T) {
 	cases := map[string][2]string{
 		"namespace":        {`"namespace": "shop"`, `"namespace": "Shop"`},
@@ -38,6 +45,7 @@ func TestParseRefusesArchive(t *testing.T) {
 		"segment seconds":  {`"segment_seconds": 900`, `"segment_seconds": 901`},
 		"no seconds":       {`"segment_seconds": 900`, `"segment_seconds": 0`},
 		"retention":        {`"retention_hours": 168`, `"retention_hours": 0`},
+		"long retention":   {`"retention_hours": 168`, `"retention_hours": 2562048`},
 		"catalog type":     {`"type": "rest"`, `"type": "glue"`},
 		"catalog url":      {`"https://catalog.example/catalog"`, `"catalog.example"`},
 		"rest path":        {`"warehouse": "shop"`, `"warehouse": "shop", "path": "x.db"`},
