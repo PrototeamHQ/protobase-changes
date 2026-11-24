@@ -28,7 +28,7 @@ func TestParseAcceptsTrailingWhitespace(t *testing.T) {
 func TestParseRefuses(t *testing.T) {
 	cases := map[string]string{
 		"unknown field": `{"apps": [], "extra": 1}`,
-		"no apps":       `{"apps": []}`,
+		"no apps":       `{"listen": ":8080", "apps": []}`,
 		"slot case":     strings.Replace(valid, `"slot": "protobase_changes"`, `"slot": "Protobase"`, 1),
 		"slot length":   strings.Replace(valid, `"slot": "protobase_changes"`, `"slot": "`+strings.Repeat("a", 64)+`"`, 1),
 		"publication":   strings.Replace(valid, `"publication": "protobase_changes"`, `"publication": "a-b"`, 1),
