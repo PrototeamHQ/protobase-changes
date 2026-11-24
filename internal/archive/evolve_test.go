@@ -133,3 +133,32 @@ func TestRenameOfAFieldAddedInTheSameSegment(t *testing.T) {
 	}
 	fieldID(t, v, "new.b")
 }
+
+func TestRetiredFieldsTakeNoColumn(t *testing.T) {
+	s := shapeOf(baseSchema())
+	s.columns(structNew, []change.Column{col("a", oidInt4, false)})
+	v1 := staged(t, baseSchema(), s.ops)
+	aID, _ := fieldID(t, v1, "new.a")
+
+	// a turns into text while a new int column takes the name a__1.
+	s = shapeOf(v1)
+	got := s.columns(structNew, []change.Column{col("a", oidText, false), col("a__1", oidInt4, false)})
+	v2 := staged(t, v1, s.ops)
+	if id, _ := fieldID(t, v2, "new.a__2"); id != aID {
+		t.Errorf("new.a__2 has id %d, want the old a's %d", id, aID)
+	}
+	if id, _ := fieldID(t, v2, "new.a__1"); id == aID || got["a__1"].retired {
+		t.Errorf("column a__1 writes to the retired field %d", id)
+	}
+
+	// Loaded again, the retired field stays apart from a later column of its name.
+	s = shapeOf(v2)
+	got = s.columns(structNew, []change.Column{col("a__2", oidInt4, false)})
+	v3 := staged(t, v2, s.ops)
+	if id, _ := fieldID(t, v3, "new.a__2"); id == aID || got["a__2"].retired {
+		t.Errorf("column a__2 writes to the retired field %d", id)
+	}
+	if id, _ := fieldID(t, v3, "new.a__2__1"); id != aID {
+		t.Errorf("new.a__2__1 has id %d, want the old a's %d", id, aID)
+	}
+}

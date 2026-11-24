@@ -173,7 +173,7 @@ Tables are partitioned by the hour of `commit_time`. Once an hour, every table o
 
 - A new column adds a field. A dropped column keeps its field, null from then on.
 - A widening from int to bigint or from real to double precision promotes the field.
-- Any other type change moves the old field aside as `<column>__1` (or the next free number), where its values stay readable, and adds a new field.
+- Any other type change moves the old field aside as `<column>__1` (or the next free number), where its values stay readable, and adds a new field. A field moved aside carries a doc that marks it retired, and no column writes to it again: when a new column takes its name, it moves aside once more.
 - A rename keeps the field id when the app announces it in the same transaction as the `ALTER TABLE`, as the WAL alone cannot tell a rename from a drop and an add:
 
   ```sql

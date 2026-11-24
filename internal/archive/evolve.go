@@ -26,6 +26,11 @@ func evolve(ctx context.Context, tbl *table.Table, ops []schemaOp) (*table.Table
 			u.AddColumn([]string{op.path[0], op.name}, op.typ, "", false, nil)
 		case opRename:
 			u.RenameColumn(op.path, op.name)
+		case opRetire:
+			u.UpdateColumn(op.path, table.ColumnUpdate{
+				Name: iceberg.Optional[string]{Valid: true, Val: op.name},
+				Doc:  iceberg.Optional[string]{Valid: true, Val: retiredDoc},
+			})
 		case opPromote:
 			u.UpdateColumn(op.path, table.ColumnUpdate{FieldType: iceberg.Optional[iceberg.Type]{Valid: true, Val: op.typ}})
 		default:
