@@ -109,10 +109,16 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 // old cursors from new ones, and the cursor format needs no slot generation.
 // Once the slot is confirmed, Postgres no longer shows where it started: an
 // archive that serves positions below the floor must keep each slot's start
-// and never serve across one.
+// and never serve across one. A slot created before the stream first started
+// is where it starts, so a reader of everything the stream brings, such as
+// the archive, finds nothing dropped; after that, a reset drops what it had
+// not read.
 func (f *Feed) Reset(from pglogrepl.LSN) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !f.started {
+		f.start = from
+	}
 	f.tail.Reset(from)
 	f.end = from
 }

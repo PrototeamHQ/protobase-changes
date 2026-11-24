@@ -175,6 +175,22 @@ func TestReadyReopensWhenAReconnectFallsBehind(t *testing.T) {
 	<-f.Ready()
 }
 
+func TestResetOfTheFirstSlotDropsNothing(t *testing.T) {
+	f := newFeed(t)
+	f.Reset(100)
+	if _, ok := f.SinceStart(0); !ok {
+		t.Fatal("a slot created before the stream started looks dropped")
+	}
+	if _, err := f.Resume(epoch, 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	f.Append(tx(120))
+	f.Reset(500)
+	if _, ok := f.SinceStart(128); ok {
+		t.Fatal("a reset after the stream started skipped over what it dropped")
+	}
+}
+
 func TestResetForgetsTheOldSlot(t *testing.T) {
 	f := newFeed(t)
 	if _, err := f.Resume(epoch, 100, 100); err != nil {
