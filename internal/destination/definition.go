@@ -230,14 +230,15 @@ func compile(raw json.RawMessage) (*match.Condition, error) {
 	return match.Compile(raw)
 }
 
-// types names the named events a change raises, for event.Named.
+// types names the named events a change raises, for event.Named, each type
+// once however many of its rules the change meets.
 func (d *Definition) types(resource string, c *change.Change) []string {
 	var out []string
 	for _, e := range d.Events {
 		if e.Resource != resource || (len(e.Operations) > 0 && !slices.Contains(e.Operations, c.Operation)) {
 			continue
 		}
-		if e.When.Holds(c) {
+		if !slices.Contains(out, e.Type) && e.When.Holds(c) {
 			out = append(out, e.Type)
 		}
 	}

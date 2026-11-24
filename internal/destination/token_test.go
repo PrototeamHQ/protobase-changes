@@ -42,6 +42,15 @@ func TestOpenSet(t *testing.T) {
 	if got := p.types("orders", turned); len(got) != 1 || got[0] != "orders.paid" {
 		t.Fatalf("types %v, want orders.paid", got)
 	}
+	twice := hook("https://receiver.example/hook")
+	twice["events"] = []map[string]any{{"type": "orders.touched", "resource": "orders"}, {"type": "orders.touched", "resource": "orders"}}
+	both, err := OpenSet(setToken(t, now.Unix(), twice), ring, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := both.Destinations[0].types("orders", turned); len(got) != 1 {
+		t.Fatalf("types %v, want each type once", got)
+	}
 	deleted := &change.Change{Operation: change.Delete, OldRowKind: change.OldFull, OldRow: row("open")}
 	if got := p.types("orders", deleted); len(got) != 0 {
 		t.Fatalf("a delete raised %v outside the event's operations", got)
