@@ -55,10 +55,24 @@ type Table struct {
 	Name   string
 }
 
+// Column describes one column of a table as the WAL stated it at a change.
+type Column struct {
+	Name string
+	// Type is the column's type OID, and Modifier its type modifier, such as
+	// the length of a varchar, or -1 for none.
+	Type     uint32
+	Modifier int32
+	// Key marks a column of the replica identity key.
+	Key bool
+}
+
 // Change is one row change, or one truncate of one table.
 type Change struct {
 	Table     Table
 	Operation Operation
+	// Columns are the table's columns at this change, in table order. Changes
+	// under the same table definition share the slice.
+	Columns []Column
 	// Key holds the replica identity key columns. It is empty for a truncate
 	// and for a table under REPLICA IDENTITY FULL, whose WAL names no key.
 	Key        Row

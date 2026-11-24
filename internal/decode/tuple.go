@@ -17,6 +17,24 @@ const (
 // keyColumnFlag marks a column of the replica identity key.
 const keyColumnFlag = 1
 
+// columns describes a relation's columns. Under REPLICA IDENTITY FULL no
+// column is a key column, as key leaves the key empty there.
+func columns(rel *pglogrepl.RelationMessage) []change.Column {
+	keyed := hasKey(rel)
+	cols := make([]change.Column, len(rel.Columns))
+	for i, meta := range rel.Columns {
+		cols[i] = change.Column{
+			Name: meta.Name, Type: meta.DataType, Modifier: meta.TypeModifier,
+			Key: keyed && meta.Flags&keyColumnFlag != 0,
+		}
+	}
+	return cols
+}
+
+func hasKey(rel *pglogrepl.RelationMessage) bool {
+	return rel.ReplicaIdentity == identityDefault || rel.ReplicaIdentity == identityIndex
+}
+
 func table(rel *pglogrepl.RelationMessage) change.Table {
 	return change.Table{Schema: rel.Namespace, Name: rel.RelationName}
 }
@@ -65,7 +83,7 @@ func oldRow(rel *pglogrepl.RelationMessage, tupleType uint8, tuple *pglogrepl.Tu
 // key picks the replica identity key out of a row. Under REPLICA IDENTITY FULL
 // pgoutput flags every column, so the WAL names no key and it stays empty.
 func key(rel *pglogrepl.RelationMessage, r change.Row) change.Row {
-	if rel.ReplicaIdentity != identityDefault && rel.ReplicaIdentity != identityIndex {
+	if !hasKey(rel) {
 		return nil
 	}
 	k := change.Row{}
