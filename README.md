@@ -156,7 +156,7 @@ The config lists every app database to follow; unknown fields stop startup.
 
 - `listen`: the address the pull and destination endpoints serve on.
 
-- `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped. A slot Postgres invalidated is created again, as [Running without it](#running-without-it) says.
+- `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped. A slot Postgres invalidated stops the app's stream, unless `PCS_RECREATE_LOST_SLOTS` lets the service create it again, as [Running without it](#running-without-it) says.
 - `publication`: must exist before startup.
 - Slot and publication names are lowercase letters, digits and underscores, up to 63 characters, not starting with a digit.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
@@ -166,7 +166,7 @@ The config lists every app database to follow; unknown fields stop startup.
 - `store`: where [destinations](#destinations) and their cursors are kept, `{"kind": "postgres", "url": ...}` for a `changes` schema in that database, or `{"kind": "sqlite", "path": ...}` for a file. Without it the app has no destinations.
 - `functions_url`: where the app serves its API functions, which [function destinations](#functions) call by name.
 - `quotas`: bounds on the app's share of a process that serves many apps, each unlimited when left out:
-  - `changes_per_second`: the row changes its stream takes in per second, a second's worth at once. An app writing faster falls behind on its own and the other apps keep their pace. Postgres keeps its WAL meanwhile, so nothing is lost while the lag stays under `max_slot_wal_keep_size`; past it, the slot is invalidated and the app's consumers resync, as [Running without it](#running-without-it) says.
+  - `changes_per_second`: the row changes its stream takes in per second, a second's worth at once. An app writing faster falls behind on its own and the other apps keep their pace. Postgres keeps its WAL meanwhile, so nothing is lost while the lag stays under `max_slot_wal_keep_size`; past it, the slot is invalidated, as [Running without it](#running-without-it) says.
   - `connections`: the consumers pulling its changes at once, over every transport; one more gets `429`.
 
 ### Many apps
@@ -305,7 +305,7 @@ The service holds the last `tail_transactions` transactions in memory, from wher
 
 ### Revocation
 
-The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. The archive never confirms the slot past a revocation until that `exp`, so after a restart the stream reads every revocation still in force again before it serves; a far `exp` keeps the WAL from that revocation on as long.
+The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. The archive never confirms the slot past a revocation until that `exp`, so after a restart the stream reads every revocation still in force again before it serves; a far `exp` keeps the WAL from that revocation on as long. A slot Postgres invalidated loses the WAL with its revocations, as [Running without it](#running-without-it) says.
 
 ### Answers
 
@@ -417,7 +417,11 @@ A small app that needs no webhooks, replication or history can skip protobase-ch
 - **Not configured:** reads, writes and the API work as normal, and live pages poll. Push still works: the app calls the push sender directly once the notification row commits.
 - **Unavailable without it:** webhooks, event subscriptions, replication and history. `protobase doctor` names what to run. An app that declares them gets a startup warning, not a crash.
 
-An outage that outlasts that WAL limit invalidates the slot. The service drops it and creates it again with a new exported snapshot, and its stream starts there: every older cursor gets `410` and resyncs, and every destination becomes `gone`. A stream open at the time ends at once, and its reconnect gets the `410`. The new slot starts past every position the old one gave, so its start alone tells old cursors from new ones.
+An outage that outlasts that WAL limit invalidates the slot. The app's stream then stops, the other apps go on, and an app that has not streamed since the service started answers `503`. The WAL the slot lost may hold revocations the service never read, so a new slot alone would let a revoked session's token stream again until it expires. To recover, first make every token issued before the loss invalid: list a new key first in the app's `key_files`, drop the old ones, and put the destinations again under the new key; or wait until the longest-lived token issued before the loss has expired. Then drop the slot, and the service creates it again with a new exported snapshot.
+
+With the environment variable `PCS_RECREATE_LOST_SLOTS=true` (`true` or `false`, default `false`), the service drops an invalidated slot and creates it again on its own, and revocations in the lost WAL go unread: the promise of [Revocation](#revocation) does not hold for sessions revoked there, whose tokens can stream from the new slot until they expire. <gap>A slot Postgres invalidated cannot be created again safely without manual work because keeping revocations beyond the WAL is not implemented.</gap>
+
+Once a slot is created again, its stream starts there: every older cursor gets `410` and resyncs, and every destination becomes `gone`. A stream open at the time ends at once, and its reconnect gets the `410`. The new slot starts past every position the old one gave, so its start alone tells old cursors from new ones.
 
 The service confirms its place only once the archive holds the WAL, so until then a finite `max_slot_wal_keep_size` also invalidates a slot that keeps up, once that much WAL of the whole server has passed the slot's start; with the default `-1`, Postgres keeps the WAL without bound. <gap>A slot that keeps up cannot stay valid under a finite max_slot_wal_keep_size because confirming the slot once the archive holds the WAL is not implemented.</gap>
 

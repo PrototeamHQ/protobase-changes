@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,13 +17,15 @@ import (
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
+	"github.com/PrototeamHQ/protobase-changes/internal/slot"
 	"github.com/PrototeamHQ/protobase-changes/internal/stream"
 	"github.com/PrototeamHQ/protobase-changes/internal/supervise"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
 )
 
 // TestInvalidatedSlotIsCreatedAgain lets Postgres invalidate the slot at
-// max_slot_wal_keep_size while the reader streams from it.
+// max_slot_wal_keep_size while the reader streams from it: a reader that may
+// not create it again fails with slot.ErrLost, and one that may creates it.
 func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 	url := databaseURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -32,18 +35,11 @@ func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 	setUp(t, ctx, db, name)
 	app := config.App{Name: "test", DatabaseURL: url, Slot: name, Publication: name, TailTransactions: 1000}
 	f := newFeed(t, app)
-	r := reader.New(app, f, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	runCtx, stop := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		supervise.Run(runCtx, supervise.Backoff{First: 50 * time.Millisecond, Max: time.Second}, r.Run, func(error) {})
-	}()
-	t.Cleanup(func() {
-		stop()
-		<-done
-	})
+	failures := make(chan error, 100)
+	stop := supervised(ctx, reader.New(app, f, log, nil), failures)
+	t.Cleanup(func() { stop() })
 
 	waitFor(t, ctx, f, func() bool { _, err := f.Head(); return err == nil })
 	oldSlot := confirmedFlush(t, ctx, db, name)
@@ -59,25 +55,30 @@ func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 		exec(t, ctx, db, "SELECT pg_reload_conf()")
 	}
 	t.Cleanup(func() { keepAll(context.Background()) })
+	fillUntil(t, ctx, db, "the reader to find the slot lost", func() bool {
+		for {
+			select {
+			case err := <-failures:
+				if errors.Is(err, slot.ErrLost) {
+					return true
+				}
+			default:
+				return false
+			}
+		}
+	})
+	stop()
+
+	r := reader.New(app, f, log, nil)
+	r.RecreateLost = true
+	stop = supervised(ctx, r, nil)
 	// Each round fills a WAL segment of its own, which the next checkpoint
 	// removes past the 1MB the slot may keep.
 	tok := token.Token{Expiry: time.Now().Add(time.Hour)}
-	for {
+	fillUntil(t, ctx, db, "the old cursor to be gone", func() bool {
 		_, err := stream.Open(f, tok, oldCursor, time.Now)
-		if errors.Is(err, stream.ErrGone) {
-			break
-		}
-		for range 3 {
-			exec(t, ctx, db, "SELECT pg_logical_emit_message(false, 'filler', 'x')")
-			exec(t, ctx, db, "SELECT pg_switch_wal()")
-		}
-		exec(t, ctx, db, "CHECKPOINT")
-		select {
-		case <-ctx.Done():
-			t.Fatalf("the old cursor still opens: %v", err)
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+		return errors.Is(err, stream.ErrGone)
+	})
 
 	// The rounds may have invalidated the new slot too, so it may be created
 	// once more: wait for one that holds its WAL.
@@ -91,6 +92,44 @@ func TestInvalidatedSlotIsCreatedAgain(t *testing.T) {
 	got := mine(t, f, name, newSlot)[0].Changes[0].NewRow["body"]
 	if got != text("new") {
 		t.Fatalf("the new slot streamed %+v, want the new row", got)
+	}
+}
+
+// supervised runs r again after each failure, which it sends to failures
+// while there is room, until the returned stop is called.
+func supervised(ctx context.Context, r *reader.Reader, failures chan<- error) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		supervise.Run(ctx, supervise.Backoff{First: 50 * time.Millisecond, Max: time.Second}, r.Run, func(err error) {
+			select {
+			case failures <- err:
+			default:
+			}
+		})
+	}()
+	return sync.OnceFunc(func() {
+		cancel()
+		<-done
+	})
+}
+
+// fillUntil fills WAL segments, which the next checkpoint removes past what
+// the slot may keep, until done.
+func fillUntil(t *testing.T, ctx context.Context, db *pgx.Conn, what string, done func() bool) {
+	t.Helper()
+	for !done() {
+		for range 3 {
+			exec(t, ctx, db, "SELECT pg_logical_emit_message(false, 'filler', 'x')")
+			exec(t, ctx, db, "SELECT pg_switch_wal()")
+		}
+		exec(t, ctx, db, "CHECKPOINT")
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 

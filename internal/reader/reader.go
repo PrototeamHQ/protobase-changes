@@ -56,6 +56,9 @@ type Reader struct {
 	log        *slog.Logger
 	onSnapshot SnapshotHook
 	throttle   throttle
+	// RecreateLost lets Run create the slot again once Postgres invalidated
+	// it, losing the revocations in the WAL it lost; see slot.Ensure.
+	RecreateLost bool
 	// confirmed is what status updates report as flushed. It only moves through
 	// Confirm, so reading alone never lets Postgres drop WAL.
 	confirmed atomic.Uint64
@@ -96,7 +99,7 @@ func (r *Reader) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s, err := slot.Ensure(ctx, conn, r.app.Slot)
+	s, err := slot.Ensure(ctx, conn, r.app.Slot, r.RecreateLost)
 	if err != nil {
 		return err
 	}
