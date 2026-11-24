@@ -26,12 +26,10 @@ const (
 // optional UTC offset and era.
 var timestampText = regexp.MustCompile(`^(\d{4,})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?)?(?:([+-])(\d{2})(?::(\d{2}))?(?::(\d{2}))?)?( BC)?$`)
 
-var timeText = regexp.MustCompile(`^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$`)
-
 // parseValue reads a value in Postgres' text format, as the reader's session
 // settings shape it, as a value of type t:
-// bool, int32, int64, float32, float64, string, []byte, arrow.Date32,
-// arrow.Time64 in microseconds or arrow.Timestamp in microseconds.
+// bool, int32, int64, float32, float64, string, []byte, arrow.Date32 or
+// arrow.Timestamp in microseconds.
 func parseValue(text string, t iceberg.Type) (any, error) {
 	switch t.(type) {
 	case iceberg.StringType:
@@ -62,8 +60,6 @@ func parseValue(text string, t iceberg.Type) (any, error) {
 		return hex.DecodeString(hexText)
 	case iceberg.DateType:
 		return parseDate(text)
-	case iceberg.TimeType:
-		return parseTime(text)
 	case iceberg.TimestampType, iceberg.TimestampTzType:
 		return parseTimestamp(text)
 	}
@@ -88,16 +84,6 @@ func parseDate(text string) (arrow.Date32, error) {
 		return 0, fmt.Errorf("date %q is out of range", text)
 	}
 	return arrow.Date32(days), nil
-}
-
-func parseTime(text string) (arrow.Time64, error) {
-	m := timeText.FindStringSubmatch(text)
-	if m == nil {
-		return 0, fmt.Errorf("time %q", text)
-	}
-	h, mi, s := atoi(m[1]), atoi(m[2]), atoi(m[3])
-	micros := (int64(h)*3600+int64(mi)*60+int64(s))*1e6 + fraction(m[4])
-	return arrow.Time64(micros), nil
 }
 
 // Unix seconds of the finite timestamps the archive holds: whole seconds

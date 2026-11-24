@@ -33,7 +33,6 @@ func TestParseValue(t *testing.T) {
 		{"5874897-12-31", p.Date, arrow.Date32(time.Date(5874897, 12, 31, 0, 0, 0, 0, time.UTC).Unix() / 86400)},
 		{"4714-11-24 BC", p.Date, arrow.Date32(time.Date(-4713, 11, 24, 0, 0, 0, 0, time.UTC).Unix() / 86400)},
 		{"0001-01-01 BC", p.Date, arrow.Date32(time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC).Unix() / 86400)},
-		{"13:45:06.5", p.Time, arrow.Time64((13*3600+45*60+6)*1e6 + 500000)},
 		{"2026-11-24 05:36:38.466", p.Timestamp, micros(time.Date(2026, 11, 24, 5, 36, 38, 466e6, time.UTC))},
 		{"2026-11-24 05:36:38.466123+00", p.TimestampTz, micros(time.Date(2026, 11, 24, 5, 36, 38, 466123e3, time.UTC))},
 		{"2026-11-24 11:06:38+05:30", p.TimestampTz, micros(time.Date(2026, 11, 24, 5, 36, 38, 0, time.UTC))},
@@ -62,6 +61,16 @@ func TestParseBytea(t *testing.T) {
 	}
 }
 
+// Postgres allows 24:00:00, which no Iceberg time holds, so a time stays text.
+func TestTimeIsKeptAsText(t *testing.T) {
+	typ := columnType(1083)
+	for _, text := range []string{"13:45:06.5", "24:00:00"} {
+		if got, err := parseValue(text, typ); err != nil || got != text {
+			t.Errorf("%q: got %v, %v", text, got, err)
+		}
+	}
+}
+
 func TestParseValueRefuses(t *testing.T) {
 	p := iceberg.PrimitiveTypes
 	cases := []struct {
@@ -73,7 +82,6 @@ func TestParseValueRefuses(t *testing.T) {
 		{"1.5", p.Int64},
 		{"0102", p.Binary},
 		{"24.11.2026", p.Date},
-		{"1:2:3", p.Time},
 		{"2026-11-24T05:36:38Z", p.TimestampTz},
 		{"294276-01-01 00:00:00", p.Timestamp},
 		{"294247-01-10 04:00:54.775807", p.Timestamp},

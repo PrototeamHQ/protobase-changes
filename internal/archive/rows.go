@@ -48,7 +48,7 @@ func (s *shape) apply(events []event) (int, []archivedRow) {
 // or nil for a rename.
 func (s *shape) applyOne(ev event) *archivedRow {
 	if ev.rename != nil {
-		s.rename(ev.rename.From, ev.rename.To)
+		s.rename(ev.rename.From, ev.rename.To, ev.position())
 		return nil
 	}
 	c := ev.change
@@ -170,8 +170,6 @@ func appendValue(b array.Builder, t iceberg.Type, text string) error {
 		b.Append(v.([]byte))
 	case *array.Date32Builder:
 		b.Append(v.(arrow.Date32))
-	case *array.Time64Builder:
-		b.Append(v.(arrow.Time64))
 	case *array.TimestampBuilder:
 		b.Append(v.(arrow.Timestamp))
 	default:

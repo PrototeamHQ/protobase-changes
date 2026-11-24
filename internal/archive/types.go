@@ -5,7 +5,8 @@ package archive
 import "github.com/apache/iceberg-go"
 
 // Postgres type OIDs with an Iceberg type of their own. Every other type,
-// such as numeric, uuid, json or an array, is archived in its text format.
+// such as numeric, uuid, json or an array, is archived in its text format,
+// and so is time: Postgres allows 24:00:00, which no Iceberg time holds.
 const (
 	oidBool        = 16
 	oidBytea       = 17
@@ -16,7 +17,6 @@ const (
 	oidFloat4      = 700
 	oidFloat8      = 701
 	oidDate        = 1082
-	oidTime        = 1083
 	oidTimestamp   = 1114
 	oidTimestampTz = 1184
 )
@@ -38,8 +38,6 @@ func columnType(oid uint32) iceberg.Type {
 		return iceberg.PrimitiveTypes.Float64
 	case oidDate:
 		return iceberg.PrimitiveTypes.Date
-	case oidTime:
-		return iceberg.PrimitiveTypes.Time
 	case oidTimestamp:
 		return iceberg.PrimitiveTypes.Timestamp
 	case oidTimestampTz:
