@@ -3,9 +3,12 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"reflect"
@@ -18,8 +21,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
+	"github.com/PrototeamHQ/protobase-changes/internal/config"
+	"github.com/PrototeamHQ/protobase-changes/internal/feed"
+	"github.com/PrototeamHQ/protobase-changes/internal/keys"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
 )
 
 type execer interface {
@@ -85,14 +90,26 @@ func start(t *testing.T, ctx context.Context, r *reader.Reader) (stop func()) {
 	}
 }
 
-// waitFor waits for cond, checking it on every append to the tail and every 50ms.
-func waitFor(t *testing.T, ctx context.Context, tl *tail.Tail, cond func() bool) {
+// testKey is the app key the tests share with the service.
+var testKey = bytes.Repeat([]byte{7}, keys.Size)
+
+func newFeed(t *testing.T, app config.App) *feed.Feed {
+	t.Helper()
+	f, err := feed.New(app, keys.Ring{testKey}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// waitFor waits for cond, checking it on every append to the feed and every 50ms.
+func waitFor(t *testing.T, ctx context.Context, f *feed.Feed, cond func() bool) {
 	t.Helper()
 	for !cond() {
 		select {
 		case <-ctx.Done():
 			t.Fatal("timed out")
-		case <-tl.Changed():
+		case <-f.Changed():
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

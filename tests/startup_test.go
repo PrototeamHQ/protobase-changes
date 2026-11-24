@@ -14,7 +14,6 @@ import (
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
 )
 
 func TestStartupRefuses(t *testing.T) {
@@ -26,7 +25,7 @@ func TestStartupRefuses(t *testing.T) {
 	setUp(t, ctx, db, name)
 
 	run := func(app config.App) error {
-		r := reader.New(app, tail.New(1), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+		r := reader.New(app, newFeed(t, app), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 		return r.Run(ctx)
 	}
 	app := config.App{Name: "test", DatabaseURL: url, Slot: name, Publication: name + "_missing", TailTransactions: 1}
@@ -61,7 +60,7 @@ func TestFailedSnapshotDropsTheNewSlot(t *testing.T) {
 	app := config.App{Name: "test", DatabaseURL: url, Slot: name, Publication: name, TailTransactions: 1}
 
 	failing := func(context.Context, reader.Snapshot) error { return errors.New("import failed") }
-	r := reader.New(app, tail.New(1), slog.New(slog.NewTextHandler(io.Discard, nil)), failing)
+	r := reader.New(app, newFeed(t, app), slog.New(slog.NewTextHandler(io.Discard, nil)), failing)
 	if err := r.Run(ctx); err == nil || !strings.Contains(err.Error(), "import failed") {
 		t.Fatalf("failing snapshot hook: %v", err)
 	}

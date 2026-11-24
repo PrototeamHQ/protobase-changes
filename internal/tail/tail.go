@@ -5,37 +5,41 @@ import (
 	"sync"
 
 	"github.com/jackc/pglogrepl"
-
-	"github.com/PrototeamHQ/protobase-changes/internal/change"
 )
 
-// Tail is a ring of the last transactions, bounded by a fixed count.
-// It is safe for concurrent use.
-type Tail struct {
-	mu      sync.Mutex
-	ring    []*change.Transaction
-	next    int
-	full    bool
-	dropped pglogrepl.LSN
+// Item is what a tail keeps: anything that committed at a WAL position.
+type Item interface {
+	Commit() pglogrepl.LSN
+}
+
+// Tail is a ring of the last items, bounded by a fixed count, appended in
+// commit order. It is safe for concurrent use.
+type Tail[T Item] struct {
+	mu   sync.Mutex
+	ring []T
+	next int
+	full bool
+	// floor is the position from which the tail holds every item.
+	floor   pglogrepl.LSN
 	changed chan struct{}
 }
 
-func New(size int) *Tail {
+func New[T Item](size int) *Tail[T] {
 	if size < 1 {
 		panic("tail size must be at least 1")
 	}
-	return &Tail{ring: make([]*change.Transaction, size), changed: make(chan struct{})}
+	return &Tail[T]{ring: make([]T, size), changed: make(chan struct{})}
 }
 
-// Append adds a committed transaction, dropping the oldest when full, and
-// wakes every waiter on Changed.
-func (t *Tail) Append(tx *change.Transaction) {
+// Append adds an item, dropping the oldest when full, and wakes every waiter
+// on Changed.
+func (t *Tail[T]) Append(item T) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.full {
-		t.dropped = t.ring[t.next].CommitLSN
+		t.floor = max(t.floor, t.ring[t.next].Commit())
 	}
-	t.ring[t.next] = tx
+	t.ring[t.next] = item
 	t.next = (t.next + 1) % len(t.ring)
 	if t.next == 0 {
 		t.full = true
@@ -44,40 +48,51 @@ func (t *Tail) Append(tx *change.Transaction) {
 	t.changed = make(chan struct{})
 }
 
+// Raise moves the floor up to lsn: the tail holds nothing committed at or
+// before it that was not appended, such as before the stream it is fed from starts.
+func (t *Tail[T]) Raise(lsn pglogrepl.LSN) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.floor = max(t.floor, lsn)
+}
+
 // Changed returns a channel that closes on the next Append.
-func (t *Tail) Changed() <-chan struct{} {
+func (t *Tail[T]) Changed() <-chan struct{} {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.changed
 }
 
-// Since returns the kept transactions that committed after lsn, oldest first.
-// ok is false when the tail no longer holds every transaction after lsn.
-func (t *Tail) Since(lsn pglogrepl.LSN) (txs []*change.Transaction, ok bool) {
+// Since returns the kept items that committed after lsn, oldest first.
+// ok is false when lsn is below the floor, so the tail may lack some of them.
+func (t *Tail[T]) Since(lsn pglogrepl.LSN) (items []T, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if lsn < t.dropped {
+	if lsn < t.floor {
 		return nil, false
 	}
 	kept := t.ordered()
-	for i, tx := range kept {
-		if tx.CommitLSN > lsn {
+	for i, item := range kept {
+		if item.Commit() > lsn {
 			return kept[i:], true
 		}
 	}
 	return nil, true
 }
 
-// Newest returns the last appended transaction, or nil when there is none.
-func (t *Tail) Newest() *change.Transaction {
+// Newest returns the last appended item; ok is false when there is none.
+func (t *Tail[T]) Newest() (item T, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.ring[(t.next-1+len(t.ring))%len(t.ring)]
+	if !t.full && t.next == 0 {
+		return item, false
+	}
+	return t.ring[(t.next-1+len(t.ring))%len(t.ring)], true
 }
 
-func (t *Tail) ordered() []*change.Transaction {
+func (t *Tail[T]) ordered() []T {
 	if !t.full {
-		return append([]*change.Transaction(nil), t.ring[:t.next]...)
+		return append([]T(nil), t.ring[:t.next]...)
 	}
-	return append(append([]*change.Transaction(nil), t.ring[t.next:]...), t.ring[:t.next]...)
+	return append(append([]T(nil), t.ring[t.next:]...), t.ring[:t.next]...)
 }
