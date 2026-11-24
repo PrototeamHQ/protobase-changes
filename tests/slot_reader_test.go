@@ -1,7 +1,9 @@
 //go:build integration
 
 // Package tests runs protobase-changes against a real Postgres, named by
-// PCS_TEST_DATABASE_URL: a superuser on a server with wal_level = logical.
+// PCS_TEST_DATABASE_URL: a superuser on a server with wal_level = logical,
+// and a real Iceberg REST catalog, PCS_TEST_CATALOG, that
+// tests/catalog/start.sh starts and prints.
 // Run with: go test -tags integration ./tests/
 package tests
 
