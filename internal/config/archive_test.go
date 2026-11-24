@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-const archived = `{"apps": [{"name": "shop", "database_url": "postgres://localhost/shop",
+const archived = `{"listen": ":8080", "apps": [{"name": "shop", "database_url": "postgres://localhost/shop",
   "slot": "protobase_changes", "publication": "protobase_changes", "tail_transactions": 1000,
+  "issuer": "https://shop.example", "key_files": ["/run/secrets/shop_key"],
   "archive": {"namespace": "shop", "segment_bytes": 67108864, "segment_seconds": 900, "retention_hours": 168,
     "catalog": {"type": "rest", "url": "https://catalog.example/catalog", "warehouse": "shop",
       "properties": {"s3.endpoint": "https://s3.example"}}}}]}`

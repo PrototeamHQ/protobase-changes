@@ -20,9 +20,9 @@ import (
 
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
+	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
 	"github.com/PrototeamHQ/protobase-changes/internal/slot"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
 )
 
 func TestSlotReader(t *testing.T) {
@@ -56,7 +56,7 @@ func TestSlotReader(t *testing.T) {
 		snapshots <- snapshot{lsn: s.LSN, rows: bodies}
 		return err
 	}
-	tl := tail.New(app.TailTransactions)
+	tl := newFeed(t, app)
 	r := reader.New(app, tl, slog.New(slog.NewTextHandler(io.Discard, nil)), readSnapshot)
 	stop := start(t, ctx, r)
 
@@ -86,7 +86,7 @@ func TestSlotReader(t *testing.T) {
 	exec(t, ctx, db, fmt.Sprintf("BEGIN; INSERT INTO %s (id, body) VALUES (9, 'gone'); ROLLBACK", name))
 	exec(t, ctx, db, fmt.Sprintf("INSERT INTO %s (id, body) VALUES (3, 'later')", name))
 
-	ours := func() []*change.Transaction { return mine(tl, name) }
+	ours := func() []*change.Transaction { return mine(t, tl, name, snapshotLSN) }
 	waitFor(t, ctx, tl, func() bool { return len(ours()) == 2 })
 	got := ours()
 	first := got[0]
@@ -132,12 +132,17 @@ func TestSlotReader(t *testing.T) {
 
 func text(s string) change.Value { return change.Value{Kind: change.Text, Text: s} }
 
-func mine(tl *tail.Tail, table string) []*change.Transaction {
-	txs, _ := tl.Since(0)
+// mine returns the transactions on table the feed holds after from.
+func mine(t *testing.T, f *feed.Feed, table string, from pglogrepl.LSN) []*change.Transaction {
+	t.Helper()
+	entries, ok := f.Since(from)
+	if !ok {
+		t.Fatalf("the feed no longer holds every transaction after %s", from)
+	}
 	var out []*change.Transaction
-	for _, tx := range txs {
-		if len(tx.Changes) > 0 && tx.Changes[0].Table.Name == table {
-			out = append(out, tx)
+	for _, e := range entries {
+		if len(e.Tx.Changes) > 0 && e.Tx.Changes[0].Table.Name == table {
+			out = append(out, e.Tx)
 		}
 	}
 	return out

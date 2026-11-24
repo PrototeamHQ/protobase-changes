@@ -7,9 +7,27 @@ import (
 
 	"github.com/PrototeamHQ/protobase-changes/internal/archive"
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
+	"github.com/PrototeamHQ/protobase-changes/internal/feed"
+	"github.com/PrototeamHQ/protobase-changes/internal/keys"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
 )
+
+// feeds loads each app's keys and makes its feed, keyed by app name.
+func feeds(cfg config.Config, log *slog.Logger) (map[string]*feed.Feed, error) {
+	out := map[string]*feed.Feed{}
+	for _, app := range cfg.Apps {
+		ring, err := keys.Load(app.KeyFiles)
+		if err != nil {
+			return nil, fmt.Errorf("app %s: %w", app.Name, err)
+		}
+		f, err := feed.New(app, ring, log)
+		if err != nil {
+			return nil, err
+		}
+		out[app.Name] = f
+	}
+	return out, nil
+}
 
 // job is one long-running part of the service, such as an app's reader.
 type job struct {
@@ -17,16 +35,16 @@ type job struct {
 	run  func(context.Context) error
 }
 
-// follow runs a reader per app, and an archiver per app with an archive,
-// until ctx ends or the first job fails, which stops the others.
-func follow(ctx context.Context, cfg config.Config, log *slog.Logger) error {
+// follow runs a reader per app into its feed, and an archiver per app with an
+// archive, until ctx ends or the first job fails, which stops the others.
+func follow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	var jobs []job
 	for _, app := range cfg.Apps {
-		t := tail.New(app.TailTransactions)
-		r := reader.New(app, t, log, nil)
+		f := fs[app.Name]
+		r := reader.New(app, f, log, nil)
 		jobs = append(jobs, job{"app " + app.Name, r.Run})
 		if app.Archive == nil {
 			continue
@@ -35,7 +53,7 @@ func follow(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("app %s: %w", app.Name, err)
 		}
-		jobs = append(jobs, job{"app " + app.Name + " archive", archive.New(*app.Archive, cat, t, r).Run})
+		jobs = append(jobs, job{"app " + app.Name + " archive", archive.New(*app.Archive, cat, f, r).Run})
 	}
 
 	errs := make(chan error, len(jobs))

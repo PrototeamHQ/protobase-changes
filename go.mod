@@ -5,6 +5,8 @@ go 1.27.4
 require (
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/apache/iceberg-go v0.7.0
+	github.com/coder/websocket v1.8.15
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/jackc/pglogrepl v0.0.0-20261111174325-d50336b09c47
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/uptrace/bun/driver/sqliteshim v1.2.18

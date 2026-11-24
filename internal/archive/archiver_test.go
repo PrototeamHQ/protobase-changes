@@ -1,8 +1,11 @@
 package archive
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -11,18 +14,30 @@ import (
 
 	"github.com/PrototeamHQ/protobase-changes/internal/change"
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
+	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
+	"github.com/PrototeamHQ/protobase-changes/internal/feed"
+	"github.com/PrototeamHQ/protobase-changes/internal/keys"
 )
+
+func newFeed(t *testing.T, size int) *feed.Feed {
+	t.Helper()
+	app := config.App{Name: "shop", TailTransactions: size}
+	f, err := feed.New(app, keys.Ring{bytes.Repeat([]byte{7}, keys.Size)}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
 
 // confirmations records each confirmed position.
 type confirmations chan pglogrepl.LSN
 
 func (c confirmations) Confirm(lsn pglogrepl.LSN) { c <- lsn }
 
-func startArchiver(t *testing.T, cfg config.Archive) (*tail.Tail, confirmations, func() error) {
+func startArchiver(t *testing.T, cfg config.Archive) (*feed.Feed, confirmations, func() error) {
 	t.Helper()
 	cat := devCatalog(t)
-	tl := tail.New(100)
+	tl := newFeed(t, 100)
 	confirmed := make(confirmations, 10)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -76,9 +91,22 @@ func TestArchiverRollsOverAtSegmentBytes(t *testing.T) {
 	}
 }
 
+func TestArchiverStartsAtTheSlotPosition(t *testing.T) {
+	cfg := config.Archive{Namespace: "shop", SegmentBytes: 1, SegmentSeconds: 900, RetentionHours: 24}
+	f, confirmed, _ := startArchiver(t, cfg)
+	if _, err := f.Resume(cursor.Epoch{SystemID: 1, Timeline: 1}, 500, 500); err != nil {
+		t.Fatal(err)
+	}
+	cols := []change.Column{col("id", oidInt4, true), col("body", oidText, false)}
+	f.Append(tx(600, time.Now(), []change.Change{insert(cols, "1", "a")}))
+	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 601 {
+		t.Fatalf("confirmed %s", lsn)
+	}
+}
+
 func TestArchiverFailsWhenTheTailDropsUnarchivedTransactions(t *testing.T) {
 	cat := devCatalog(t)
-	tl := tail.New(1)
+	tl := newFeed(t, 1)
 	tl.Append(tx(100, time.Now(), nil))
 	tl.Append(tx(200, time.Now(), nil))
 	cfg := config.Archive{Namespace: "shop", SegmentBytes: 1 << 30, SegmentSeconds: 900, RetentionHours: 24}

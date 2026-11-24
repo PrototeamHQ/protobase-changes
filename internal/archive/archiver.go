@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pglogrepl"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
+	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 )
 
 // Confirmer lets Postgres drop the WAL up to a position, such as the reader.
@@ -17,17 +17,17 @@ type Confirmer interface {
 	Confirm(lsn pglogrepl.LSN)
 }
 
-// Archiver follows an app's tail and commits it to the archive a segment at
+// Archiver follows an app's feed and commits it to the archive a segment at
 // a time, confirming the slot only once a segment is committed.
 type Archiver struct {
 	cfg     config.Archive
 	cat     catalog.Catalog
-	tail    *tail.Tail
+	feed    *feed.Feed
 	confirm Confirmer
 }
 
-func New(cfg config.Archive, cat catalog.Catalog, t *tail.Tail, confirm Confirmer) *Archiver {
-	return &Archiver{cfg: cfg, cat: cat, tail: t, confirm: confirm}
+func New(cfg config.Archive, cat catalog.Catalog, f *feed.Feed, confirm Confirmer) *Archiver {
+	return &Archiver{cfg: cfg, cat: cat, feed: f, confirm: confirm}
 }
 
 // Run archives until ctx ends or archiving fails. A segment not yet
@@ -40,14 +40,17 @@ func (a *Archiver) Run(ctx context.Context) error {
 	var read pglogrepl.LSN
 	nextMaintenance := time.Now()
 	for {
-		changed := a.tail.Changed()
-		txs, ok := a.tail.Since(read)
+		changed := a.feed.Changed()
+		// Everything before the slot's position the stream started from is
+		// archived already, as only the archive confirms the slot.
+		read = max(read, a.feed.Start())
+		entries, ok := a.feed.Since(read)
 		if !ok {
 			return fmt.Errorf("archive: the tail dropped transactions after %s before they were archived", read)
 		}
-		for _, tx := range txs {
-			seg.add(tx, time.Now())
-			read = tx.CommitLSN
+		for _, e := range entries {
+			seg.add(e.Tx, time.Now())
+			read = e.Tx.CommitLSN
 		}
 
 		if len(seg.txs) > 0 && (seg.bytes >= a.cfg.SegmentBytes || !time.Now().Before(a.deadline(seg))) {

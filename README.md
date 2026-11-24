@@ -91,6 +91,7 @@ The token is a JWE, encrypted with AES-256-GCM under a key that the app, the rel
 - `payload` sets the shape of each change: `thin` for live queries, `raw` for the stored rows a replica needs.
 - `cursor` marks the snapshot the list was read from, so no change slips between the read and the subscription. Each notice carries a fresh cursor to resume from.
 - `where` combines the request's filter, `channel_id`, with the access rule, `tenant_id`. protobase-changes only ever sees plain conditions like these.
+- `subs` lists each resource by table name, or as `schema.table` outside the public schema. A table whose schema or name holds a dot is never sent, since its resource could name another table too. There is no wildcard: a full replica lists every resource, so a table added later is never granted by accident. <gap>A subscription with `where` is refused with 400 because the condition matcher is not implemented.</gap>
 
 Some rules need a subquery, such as "channels I belong to". The app turns the subquery's result into constants when it issues the token. Could that go stale? Yes. When a membership changes, the app calls `live.refresh({ user })`, and the token's expiry caps anything missed.
 
@@ -114,22 +115,29 @@ The config lists every app database to follow; unknown fields stop startup.
 
 ```json
 {
+  "listen": ":8080",
   "apps": [
     {
       "name": "shop",
       "database_url": "postgres://changes@db.internal/shop",
       "slot": "protobase_changes",
       "publication": "protobase_changes",
-      "tail_transactions": 10000
+      "tail_transactions": 10000,
+      "issuer": "https://shop.example",
+      "key_files": ["/run/secrets/shop_changes_key"]
     }
   ]
 }
 ```
 
+- `listen`: the address the pull endpoints serve on.
+
 - `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped.
 - `publication`: must exist before startup.
 - Slot and publication names are lowercase letters, digits and underscores, up to 63 characters, not starting with a digit.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
+- `issuer`: the `iss` of the app's tokens, and the `source` of its events.
+- `key_files`: files that each hold one 32-byte key the app shares, base64url without padding. The first one encrypts cursors; every one opens tokens and cursors, so a new key goes first and the old one stays listed until what it sealed has expired.
 - `archive`: optional, the app's Iceberg archive below. Without it nothing confirms the slot, so Postgres keeps all WAL from the slot's start.
 
 ### Archive
@@ -212,8 +220,64 @@ SELECT pg_logical_emit_message(true, 'protobase_schema', '{"rename":{"schema":"p
 
 - `protobase_actor`: who made the changes that follow it.
 - `protobase_schema`: a schema change, in order with the rows around it, such as the column rename the archive reads.
+- `protobase_revoke`: ends a session's access, as `{"sid":"s9","exp":1795480000}` with `exp` when its last token expires.
 
-The content passes on unchanged as bytes; the actor payload above is an example. Messages with other prefixes are skipped. A non-transactional `protobase_` message is skipped with a warning, since it arrives even when its transaction rolls back.
+The content passes on unchanged as bytes; the payloads above are examples. Messages with other prefixes are skipped. A non-transactional `protobase_` message is skipped with a warning, since it arrives even when its transaction rolls back.
+
+## Pulling changes
+
+A replica or integration reads an app's changes from one address, in one of three transports, each with a bearer token:
+
+```http
+GET /apps/shop/changes?cursor=Ab3x...
+Authorization: Bearer eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0...
+```
+
+- **WebSocket:** an upgrade request, with subprotocol `cloudevents.json`: one event per text message.
+- **Server-sent events:** `Accept: text/event-stream`. Each event's `id` is its cursor, so a reconnecting event source resumes through `Last-Event-ID` by itself.
+- **Long polling:** any other request. It answers with a JSON array of events (`application/cloudevents-batch+json`) as soon as there is one, up to 500, or with a position event after 25 seconds.
+
+The token is the live token above, with `payload: raw` for a replica. Without `?cursor=` the consumer starts at the token's `cursor`, or live from now. It gets the transactions held after that position, then live ones as they commit.
+
+### Events
+
+Every message is a CloudEvent in the structured JSON format, one per committed transaction, with the changes the token may read:
+
+```json
+{
+  "specversion": "1.0", "id": "kR2vB8...", "source": "https://shop.example",
+  "type": "protobase.changes.transaction", "time": "2026-11-24T10:00:00.123456Z",
+  "datacontenttype": "application/json", "cursor": "Ab3x...",
+  "data": { "changes": [
+    { "resource": "messages", "operation": "update", "key": { "id": "42" },
+      "new": { "id": "42", "body": "hey", "edited_at": null }, "actor": { "sub": "u42" } } ] }
+}
+```
+
+- A `thin` payload holds the resource, operation and key; `raw` adds the old and new rows as the WAL states them, a truncate's `cascade` and `restart_identity`, and the actor of the last `protobase_actor` message before the change. A large value an update left unchanged is left out of `new`, never sent as null.
+- The `id` stays the same on every replay of a transaction, so a consumer can drop a duplicate. It derives from the last key in `key_files`, so adding a new key first keeps it; retiring that last key changes every id.
+- A transaction the token may read nothing of sends nothing. When nothing was sent for 25 seconds, a `protobase.changes.position` event without data carries the cursor past what was skipped, which keeps the connection alive and the consumer's cursor current.
+
+### Cursors
+
+Every event carries a `cursor`: the transaction's commit position and the database's epoch, its system identifier and timeline, encrypted with AES-256-GCM under a key derived from the app's key. A consumer keeps the cursor of the last event it handled and sends it back on its next connection; nothing is acknowledged. Cursors cannot be read or forged, and every cursor of one position resumes the same way.
+
+The service holds the last `tail_transactions` transactions in memory, from where its stream started. A cursor it can no longer resume from gets `410`, and the consumer resyncs from a snapshot; a WebSocket or event stream that falls that far behind is closed, and its reconnect gets the `410`.
+
+- <gap>A cursor older than the in-memory tail cannot resume because replay from the archive is not implemented.</gap>
+- <gap>Cursors cannot survive a failover or a restore because a mapping between timelines is not implemented.</gap>
+
+### Revocation
+
+The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. <gap>Revocations cannot outlive a restart once the archive confirms the slot because rebuilding them from the archive is not implemented.</gap>
+
+### Answers
+
+- `400`: an invalid cursor, or a token with conditions.
+- `401`: no valid token for the app, an expired one, or a revoked session. Every invalid token gets the same answer.
+- `404`: no app of that name.
+- `410`: the cursor can no longer resume.
+- `503`: the app's stream has not yet read all the WAL there was when it connected, so revocations in it may still be unknown.
 
 ## Running without it
 

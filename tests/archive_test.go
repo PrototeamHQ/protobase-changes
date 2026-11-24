@@ -24,7 +24,6 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/archive"
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
 	"github.com/PrototeamHQ/protobase-changes/internal/reader"
-	"github.com/PrototeamHQ/protobase-changes/internal/tail"
 )
 
 // catalogConfig reads the REST catalog the tests archive to, as
@@ -49,14 +48,14 @@ func archiving(t *testing.T, ctx context.Context, app config.App) (stop func()) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	tl := tail.New(app.TailTransactions)
-	r := reader.New(app, tl, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	f := newFeed(t, app)
+	r := reader.New(app, f, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	stopReader := start(t, ctx, r)
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := archive.New(*app.Archive, cat, tl, r).Run(ctx); !errors.Is(err, context.Canceled) {
+		if err := archive.New(*app.Archive, cat, f, r).Run(ctx); !errors.Is(err, context.Canceled) {
 			t.Errorf("archiver stopped: %v", err)
 		}
 	}()

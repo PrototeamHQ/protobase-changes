@@ -20,10 +20,16 @@ type App struct {
 	TailTransactions int `json:"tail_transactions"`
 	// Archive is optional: without it, nothing confirms the slot.
 	Archive *Archive `json:"archive"`
+	// Issuer is the iss every token of the app carries, and the source of its events.
+	Issuer string `json:"issuer"`
+	// KeyFiles hold the keys shared with the app: the first encrypts, every one decrypts.
+	KeyFiles []string `json:"key_files"`
 }
 
 type Config struct {
-	Apps []App `json:"apps"`
+	// Listen is the address the pull endpoints serve on, such as ":8080".
+	Listen string `json:"listen"`
+	Apps   []App  `json:"apps"`
 }
 
 // identifier matches a slot or publication name that needs no quoting in a
@@ -45,6 +51,9 @@ func Parse(r io.Reader) (Config, error) {
 }
 
 func (c Config) validate() error {
+	if c.Listen == "" {
+		return fmt.Errorf("config: listen is empty")
+	}
 	if len(c.Apps) == 0 {
 		return fmt.Errorf("config: apps lists no app")
 	}
@@ -68,6 +77,12 @@ func (c Config) validate() error {
 		}
 		if app.TailTransactions < 1 {
 			return fmt.Errorf("config: app %q tail_transactions must be at least 1", app.Name)
+		}
+		if app.Issuer == "" {
+			return fmt.Errorf("config: app %q has no issuer", app.Name)
+		}
+		if len(app.KeyFiles) == 0 {
+			return fmt.Errorf("config: app %q lists no key_files", app.Name)
 		}
 		if app.Archive != nil {
 			if err := app.Archive.validate(app.Name); err != nil {
