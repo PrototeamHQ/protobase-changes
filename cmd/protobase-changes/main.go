@@ -13,6 +13,8 @@ import (
 	"syscall"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/config"
+	"github.com/PrototeamHQ/protobase-changes/internal/feed"
+	"github.com/PrototeamHQ/protobase-changes/internal/serve"
 )
 
 // version is set at release builds with -ldflags "-X main.version=<version>".
@@ -57,11 +59,25 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = follow(ctx, cfg, fs, log)
+	err = serveAndFollow(ctx, cfg, fs, log)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
+}
+
+// serveAndFollow runs the readers and the pull endpoints until ctx ends or
+// either fails, which stops the other.
+func serveAndFollow(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, log *slog.Logger) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make(chan error, 2)
+	go func() { errs <- follow(ctx, cfg, fs, log) }()
+	go func() { errs <- listen(ctx, cfg.Listen, serve.New(fs).Handler()) }()
+	first := <-errs
+	cancel()
+	<-errs
+	return first
 }
 
 func printVersion(w io.Writer) error {
