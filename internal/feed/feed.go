@@ -116,7 +116,7 @@ func (f *Feed) Append(tx *change.Transaction) {
 		if m.Prefix != revoke.Prefix {
 			continue
 		}
-		if err := f.Revoked.Add(m.Content, now); err != nil {
+		if err := f.Revoked.Add(m.Content, tx.CommitLSN, now); err != nil {
 			f.log.Warn("ignored a malformed revocation", "error", err.Error(), "lsn", tx.CommitLSN.String())
 		}
 	}

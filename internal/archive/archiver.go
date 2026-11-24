@@ -87,7 +87,9 @@ func (a *Archiver) deadline(seg segment) time.Time {
 	return seg.started.Add(time.Duration(a.cfg.SegmentSeconds) * time.Second)
 }
 
-// flush commits a segment table by table, then confirms the slot up to its end.
+// flush commits a segment table by table, then confirms the slot up to its
+// end, but never past a revocation whose tokens may still be valid: the
+// feed holds revocations only in memory, so a restart must read them again.
 func (a *Archiver) flush(ctx context.Context, seg segment) error {
 	byTable, err := seg.tables()
 	if err != nil {
@@ -98,6 +100,10 @@ func (a *Archiver) flush(ctx context.Context, seg segment) error {
 			return fmt.Errorf("archive %s.%s: %w", t.Schema, t.Name, err)
 		}
 	}
-	a.confirm.Confirm(seg.end())
+	upTo := seg.end()
+	if held, ok := a.feed.Revoked.Oldest(time.Now()); ok && held < upTo {
+		upTo = held
+	}
+	a.confirm.Confirm(upTo)
 	return nil
 }

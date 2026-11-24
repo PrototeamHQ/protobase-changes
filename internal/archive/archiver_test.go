@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
+	"github.com/PrototeamHQ/protobase-changes/internal/revoke"
 )
 
 func newFeed(t *testing.T, size int) *feed.Feed {
@@ -88,6 +90,24 @@ func TestArchiverRollsOverAtSegmentBytes(t *testing.T) {
 	tl.Append(tx(100, time.Now(), []change.Change{insert(cols, "1", "a")}))
 	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 101 {
 		t.Fatalf("confirmed %s", lsn)
+	}
+}
+
+// The feed holds revocations only in memory, so the slot stays at the
+// commit of one whose tokens may still be valid, for a restart to read again.
+func TestArchiverHoldsTheSlotAtALiveRevocation(t *testing.T) {
+	cfg := config.Archive{Namespace: "shop", SegmentBytes: 1, SegmentSeconds: 900, RetentionHours: 24}
+	tl, confirmed, _ := startArchiver(t, cfg)
+	cols := []change.Column{col("id", oidInt4, true), col("body", oidText, false)}
+	exp := time.Now().Add(time.Hour).Unix()
+	revocation := change.Message{Prefix: revoke.Prefix, Content: []byte(fmt.Sprintf(`{"sid":"s9","exp":%d}`, exp))}
+	tl.Append(tx(100, time.Now(), []change.Change{insert(cols, "1", "a")}, revocation))
+	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 100 {
+		t.Fatalf("confirmed %s, want the revocation's commit 0/64", lsn)
+	}
+	tl.Append(tx(200, time.Now(), []change.Change{insert(cols, "2", "b")}))
+	if lsn := waitConfirm(t, confirmed, 5*time.Second); lsn != 100 {
+		t.Fatalf("confirmed %s past a live revocation", lsn)
 	}
 }
 
