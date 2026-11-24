@@ -163,3 +163,22 @@ func TestRefusesUnknownRelations(t *testing.T) {
 		t.Fatal("delete of an unknown relation decoded")
 	}
 }
+
+func TestOpenFromBeginToCommit(t *testing.T) {
+	d := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	steps := []struct {
+		msg  pglogrepl.Message
+		open bool
+	}{{begin(), true}, {commit(), false}}
+	if d.Open() {
+		t.Fatal("open before a begin")
+	}
+	for i, s := range steps {
+		if _, err := d.Decode(s.msg); err != nil {
+			t.Fatal(err)
+		}
+		if d.Open() != s.open {
+			t.Fatalf("step %d: open %v", i, d.Open())
+		}
+	}
+}

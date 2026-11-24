@@ -64,6 +64,9 @@ type Reader struct {
 	// confirmed is what status updates report as flushed. It only moves through
 	// Confirm, so reading alone never lets Postgres drop WAL.
 	confirmed atomic.Uint64
+	// received is where a keepalive said the server sent every transaction
+	// committed before, taken only while no transaction was open.
+	received atomic.Uint64
 }
 
 // New makes a reader of app into sink. onSnapshot may be nil.
@@ -77,9 +80,21 @@ func New(app config.App, sink Sink, log *slog.Logger, onSnapshot SnapshotHook) *
 // Confirm lets Postgres drop the WAL up to lsn, once what it holds is stored
 // elsewhere. Postgres ignores a position below the slot's current one.
 func (r *Reader) Confirm(lsn pglogrepl.LSN) {
+	raise(&r.confirmed, lsn)
+}
+
+// Received returns a position before which the sink got every transaction
+// that committed: the last keepalive that came while no transaction was open.
+// A transaction still in progress at it commits past it.
+func (r *Reader) Received() pglogrepl.LSN {
+	return pglogrepl.LSN(r.received.Load())
+}
+
+// raise moves v up to lsn, never down.
+func raise(v *atomic.Uint64, lsn pglogrepl.LSN) {
 	for {
-		old := r.confirmed.Load()
-		if uint64(lsn) <= old || r.confirmed.CompareAndSwap(old, uint64(lsn)) {
+		old := v.Load()
+		if uint64(lsn) <= old || v.CompareAndSwap(old, uint64(lsn)) {
 			return
 		}
 	}
@@ -277,6 +292,9 @@ func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool
 		// A logical walsender's keepalive carries where it has decoded and
 		// sent up to, so every transaction committed before it has come.
 		r.sink.Decoded(ka.ServerWALEnd)
+		if !dec.Open() {
+			raise(&r.received, ka.ServerWALEnd)
+		}
 		return ka.ServerWALEnd, ka.ReplyRequested, nil, nil
 	case pglogrepl.XLogDataByteID:
 		xld, err := pglogrepl.ParseXLogData(data[1:])
