@@ -69,7 +69,9 @@ func dialectOf(cfg config.Store) (dialect, string, error) {
 	case config.Postgres:
 		return postgres, cfg.URL, nil
 	case config.SQLite:
-		dsn := "file:" + cfg.Path + "?" + url.Values{"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)"}}.Encode()
+		// The path is escaped, so a # or ? in it stays part of the file name.
+		path := (&url.URL{Path: cfg.Path}).EscapedPath()
+		dsn := "file:" + path + "?" + url.Values{"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)"}}.Encode()
 		return sqlite, dsn, nil
 	}
 	return dialect{}, "", fmt.Errorf("store kind %q is not postgres or sqlite", cfg.Kind)
