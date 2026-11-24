@@ -71,3 +71,29 @@ func TestChangedClosesOnAppend(t *testing.T) {
 	tl.Append(1)
 	<-ch
 }
+
+func TestResetDropsEverythingAndWakesWaiters(t *testing.T) {
+	tl := New[item](5)
+	tl.Append(10)
+	tl.Append(20)
+	changed := tl.Changed()
+	tl.Reset(100)
+	select {
+	case <-changed:
+	default:
+		t.Fatal("Reset did not wake a waiter")
+	}
+	if _, ok := tl.Since(20); ok {
+		t.Fatal("Since(20) is ok below the floor Reset set")
+	}
+	if got, ok := tl.Since(100); !ok || len(got) != 0 {
+		t.Fatalf("Since(100) = %v %v, want nothing held", got, ok)
+	}
+	if _, ok := tl.Newest(); ok {
+		t.Fatal("Reset kept an item")
+	}
+	tl.Append(110)
+	if got, ok := tl.Since(100); !ok || len(got) != 1 || got[0] != 110 {
+		t.Fatalf("Since(100) after an append = %v %v", got, ok)
+	}
+}

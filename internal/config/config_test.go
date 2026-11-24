@@ -41,6 +41,24 @@ func TestParseStore(t *testing.T) {
 	}
 }
 
+func TestParseQuotas(t *testing.T) {
+	c, err := Parse(strings.NewReader(withApp(`"quotas": {"changes_per_second": 5000, "connections": 200}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := c.Apps[0].Quotas
+	if *q.ChangesPerSecond != 5000 || *q.Connections != 200 {
+		t.Fatalf("quotas %+v", q)
+	}
+	c, err = Parse(strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := c.Apps[0].Quotas; q.ChangesPerSecond != nil || q.Connections != nil {
+		t.Fatalf("quotas left out are %+v, want unlimited", q)
+	}
+}
+
 func TestParseRefuses(t *testing.T) {
 	cases := map[string]string{
 		"unknown field": `{"apps": [], "extra": 1}`,
@@ -62,6 +80,9 @@ func TestParseRefuses(t *testing.T) {
 		"store url":     withApp(`"store": {"kind": "postgres", "path": "/tmp/x"}`),
 		"store both":    withApp(`"store": {"kind": "sqlite", "path": "/tmp/x", "url": "postgres://x"}`),
 		"functions url": withApp(`"functions_url": "shop.internal/api/functions"`),
+		"no rate":       withApp(`"quotas": {"changes_per_second": 0}`),
+		"no connection": withApp(`"quotas": {"connections": -1}`),
+		"quota field":   withApp(`"quotas": {"bytes": 1}`),
 	}
 	for name, input := range cases {
 		if _, err := Parse(strings.NewReader(input)); err == nil {

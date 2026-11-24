@@ -11,6 +11,8 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/standard-webhooks/standard-webhooks/libraries v1.3.0
 	github.com/uptrace/bun/driver/sqliteshim v1.2.18
+	golang.org/x/sync v0.24.0
+	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.63.0
 )
 
@@ -103,7 +105,6 @@ require (
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect

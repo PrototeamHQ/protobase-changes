@@ -32,7 +32,14 @@ type worker struct {
 	// unsaved counts the transactions the cursor passed in memory since it
 	// was last saved.
 	unsaved int
+	// dirty is whether state differs from what the store holds, such as a
+	// cursor moved in memory or a save that failed.
+	dirty bool
 }
+
+// held returns where the worker got to, for the next worker of its
+// destination. Call it only after run returned.
+func (w *worker) held() held { return held{state: w.state, unsaved: w.dirty} }
 
 // run delivers until ctx ends or the store fails.
 func (w *worker) run(ctx context.Context) error {
@@ -68,6 +75,11 @@ func (w *worker) start(ctx context.Context) error {
 	}
 	if w.state.Status != Gone && w.state.Position.Epoch != head.Epoch {
 		return w.lose(ctx)
+	}
+	// An earlier worker's state the store lacks is saved first, so the store
+	// shows a gone destination and its cursor stays within the feed.
+	if w.dirty {
+		return w.save(ctx)
 	}
 	return nil
 }
@@ -134,6 +146,7 @@ func (w *worker) deliverNext(ctx context.Context) error {
 		}
 		if g.end != 0 {
 			w.state.Position.LSN = g.end
+			w.dirty = true
 			w.unsaved += g.seen
 			if w.unsaved >= max(2, w.feed.App.TailTransactions/2) {
 				if err := w.save(ctx); err != nil {
@@ -243,9 +256,10 @@ func (w *worker) lose(ctx context.Context) error {
 }
 
 func (w *worker) save(ctx context.Context) error {
-	w.unsaved = 0
+	w.dirty = true
 	if err := w.store.PutState(ctx, w.app, w.def.Name, w.state); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
+	w.unsaved, w.dirty = 0, false
 	return nil
 }

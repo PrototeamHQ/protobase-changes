@@ -40,7 +40,12 @@ type fixture struct {
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
-	f, err := feed.New(config.App{Name: "shop", Issuer: issuer, TailTransactions: 3}, keys.Ring{key},
+	return newFixtureWith(t, config.Quotas{})
+}
+
+func newFixtureWith(t *testing.T, quotas config.Quotas) fixture {
+	t.Helper()
+	f, err := feed.New(config.App{Name: "shop", Issuer: issuer, TailTransactions: 3, Quotas: quotas}, keys.Ring{key},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -310,5 +315,44 @@ func TestWebSocketRefusesBeforeTheHandshake(t *testing.T) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("timed out")
+	}
+}
+
+func TestConnectionsQuota(t *testing.T) {
+	limit := 1
+	fx := newFixtureWith(t, config.Quotas{Connections: &limit})
+	tok := seal(t, claims(nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fx.url+ChangesPath("shop", ""), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Accept", "text/event-stream")
+	open, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer open.Body.Close()
+	if open.StatusCode != http.StatusOK {
+		t.Fatalf("first stream answered %d", open.StatusCode)
+	}
+
+	if res := get(t, fx.url+ChangesPath("shop", ""), tok, nil); res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a poll beyond the quota answered %d, want 429", res.StatusCode)
+	}
+	cancel()
+	open.Body.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		res := get(t, fx.url+ChangesPath("shop", ""), tok, nil)
+		if res.StatusCode == http.StatusOK {
+			return
+		}
+		if res.StatusCode != http.StatusTooManyRequests || time.Now().After(deadline) {
+			t.Fatalf("a poll after the stream closed answered %d, want 200", res.StatusCode)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
