@@ -70,6 +70,7 @@ func (a *Archiver) Run(ctx context.Context) error {
 		if upTo := a.held(received); idle && upTo > idleConfirmed {
 			a.confirm.Confirm(upTo)
 			idleConfirmed = upTo
+			read = max(read, upTo)
 		}
 		if !time.Now().Before(nextMaintenance) {
 			retention := time.Duration(a.cfg.RetentionHours) * time.Hour
