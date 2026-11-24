@@ -74,10 +74,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	hs, err := hubs(ctx, cfg, fs, ss, log)
-	if err != nil {
-		return err
-	}
+	hs := hubs(cfg, fs, ss, log)
 	err = serveAndFollow(ctx, cfg, fs, hs, recreateLost, log)
 	if errors.Is(err, context.Canceled) {
 		return nil

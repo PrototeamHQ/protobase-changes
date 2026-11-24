@@ -124,13 +124,22 @@ func TestDeliversFromTheDatabase(t *testing.T) {
 	f := newFeed(t, app)
 	stop := start(t, ctx, reader.New(app, f, log, nil))
 	defer stop()
-	hub, err := destination.NewHub(ctx, f, s, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, log)
-	if err != nil {
-		t.Fatal(err)
-	}
+	hub := destination.NewHub(f, s, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, log)
 	hubCtx, stopHub := context.WithCancel(ctx)
 	hubDone := make(chan error, 1)
 	go func() { hubDone <- hub.Run(hubCtx) }()
+	select {
+	case <-hub.Ready():
+	case err := <-hubDone:
+		stopHub()
+		t.Fatalf("the hub stopped before it loaded: %v", err)
+	case <-ctx.Done():
+		stopHub()
+		<-hubDone
+		t.Fatal("timed out waiting for the hub to load")
+	}
+	// Registered only once the hub loaded: t.Fatal above ends the test
+	// before this defer exists, so hubDone is read once either way.
 	defer func() {
 		stopHub()
 		if err := <-hubDone; !errors.Is(err, context.Canceled) {

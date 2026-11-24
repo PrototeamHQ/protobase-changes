@@ -127,7 +127,7 @@ protobase-changes --config changes.json
 
 - **Download:** one binary or container image per GitHub release, like the relay.
 - **State:** destination cursors go in a `changes` schema in your app's database, or in a SQLite file.
-- **Updates:** `protobase-changes --config changes.json --migrate` applies the store's schema and exits. Run it at each update, before the new version starts; it applies what is missing in one transaction, so a failure leaves the store as it was. Startup never migrates, and stops while the schema is behind.
+- **Updates:** `protobase-changes --config changes.json --migrate` applies the store's schema and exits. Run it at each update, before the new version starts; it applies what is missing in one transaction, so a failure leaves the store as it was. Startup never migrates: an app whose store is behind delivers nothing until it is migrated, and the other apps run.
 - **Archive:** any S3-compatible bucket or a local directory.
 
 ### Configuration
@@ -171,7 +171,7 @@ The config lists every app database to follow; unknown fields stop startup.
 
 ### Many apps
 
-One process follows every app its config lists, each with its own replication connection, slot, feed and destination workers, and nothing on one app's path is shared with another. An app whose database or store fails holds back only itself: it reads or delivers again after a wait of a second, doubling up to a minute, and back to a second once it ran a minute, while the other apps go on. Startup still stops on an invalid config, an unreadable key file or a store whose schema is behind. <gap>An app whose store cannot be reached at startup stops the whole process because loading destinations after startup is not implemented.</gap>
+One process follows every app its config lists, each with its own replication connection, slot, feed and destination workers, and nothing on one app's path is shared with another. An app whose database or store fails holds back only itself: it reads or delivers again after a wait of a second, doubling up to a minute, and back to a second once it ran a minute, while the other apps go on. Startup still stops on an invalid config or an unreadable key file. An app whose store is behind or cannot be reached at startup delivers nothing until it is migrated or reachable, while the other apps run; until its destinations have loaded, puts and resumes of them get `503`.
 
 ### Archive
 

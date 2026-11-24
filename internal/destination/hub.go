@@ -18,6 +18,9 @@ var (
 	ErrStale = errors.New("a set issued later is kept")
 	// ErrUnknown means the app defines no destination of that name.
 	ErrUnknown = errors.New("unknown destination")
+	// ErrNotLoaded means the hub has not read the app's kept set and states
+	// yet, such as while its store cannot be reached.
+	ErrNotLoaded = errors.New("the app's destinations are not loaded yet")
 )
 
 // Hub runs one app's destinations, a worker each. It is safe for concurrent use.
@@ -31,9 +34,14 @@ type Hub struct {
 	delays []time.Duration
 	now    func() time.Time
 
-	mu  sync.Mutex
-	raw string
-	set Set
+	mu sync.Mutex
+	// loaded is whether the kept set and states were read; until then the
+	// hub takes no put, which could replace a set issued later. ready closes
+	// once they are.
+	loaded bool
+	ready  chan struct{}
+	raw    string
+	set    Set
 	// states holds the states of destinations that do not run yet, until a
 	// worker takes one or a set removes its destination.
 	states map[string]held
@@ -57,40 +65,68 @@ type running struct {
 	done   chan struct{}
 }
 
-// NewHub loads the app's set and states from the store. A kept set that no
-// key of the app opens any longer leaves the app without destinations until
-// it puts a new one, and their states wait for it.
-func NewHub(ctx context.Context, f *feed.Feed, store Store, sender *Sender, log *slog.Logger) (*Hub, error) {
-	h := &Hub{
+// NewHub returns the app's hub; it reads nothing from the store before Run.
+func NewHub(f *feed.Feed, store Store, sender *Sender, log *slog.Logger) *Hub {
+	return &Hub{
 		app: f.App, feed: f, store: store, sender: sender, log: log.With("app", f.App.Name),
 		delays: retryDelays, now: time.Now, running: map[string]*running{}, removed: map[string]bool{},
+		ready: make(chan struct{}),
 	}
-	raw, err := store.Definitions(ctx, h.app.Name)
-	if err != nil {
-		return nil, fmt.Errorf("app %s: store: %w", h.app.Name, err)
-	}
-	if raw != "" {
-		set, err := OpenSet(raw, f.Keys, h.app.Issuer)
-		if err != nil {
-			h.log.Error("the kept destinations no longer open under the app's keys; put them again")
-		} else {
-			h.raw, h.set = raw, set
-		}
-	}
-	stored, err := store.States(ctx, h.app.Name)
-	if err != nil {
-		return nil, fmt.Errorf("app %s: store: %w", h.app.Name, err)
-	}
-	h.states = map[string]held{}
-	for name, state := range stored {
-		h.states[name] = held{state: state}
-	}
-	return h, nil
 }
 
-// Run delivers to every destination until ctx ends or the store fails. Run
-// again after a failure goes on from where each destination got to.
+// load checks the store's schema and reads the app's set and states, once.
+// A kept set that no key of the app opens any longer leaves the app without
+// destinations until it puts a new one, and their states wait for it.
+func (h *Hub) load(ctx context.Context) error {
+	if h.isLoaded() {
+		return nil
+	}
+	if err := h.store.Check(ctx); err != nil {
+		return fmt.Errorf("app %s: store: %w", h.app.Name, err)
+	}
+	raw, err := h.store.Definitions(ctx, h.app.Name)
+	if err != nil {
+		return fmt.Errorf("app %s: store: %w", h.app.Name, err)
+	}
+	stored, err := h.store.States(ctx, h.app.Name)
+	if err != nil {
+		return fmt.Errorf("app %s: store: %w", h.app.Name, err)
+	}
+	var set Set
+	if raw != "" {
+		set, err = OpenSet(raw, h.feed.Keys, h.app.Issuer)
+		if err != nil {
+			h.log.Error("the kept destinations no longer open under the app's keys; put them again")
+			raw, set = "", Set{}
+		}
+	}
+	states := map[string]held{}
+	for name, state := range stored {
+		states[name] = held{state: state}
+	}
+	h.mu.Lock()
+	h.raw, h.set, h.states, h.loaded = raw, set, states, true
+	close(h.ready)
+	h.mu.Unlock()
+	return nil
+}
+
+// Ready closes once a run has read the app's kept set and states.
+func (h *Hub) Ready() <-chan struct{} { return h.ready }
+
+func (h *Hub) isLoaded() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.loaded
+}
+
+// Run loads the app's destinations when no earlier run did, then delivers to
+// every destination until ctx ends or the store fails. Run again after a
+// failure goes on from where each destination got to.
 func (h *Hub) Run(ctx context.Context) error {
+	if err := h.load(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	h.mu.Lock()
@@ -130,6 +166,9 @@ func (h *Hub) Put(ctx context.Context, raw string) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if !h.loaded {
+		return ErrNotLoaded
+	}
 	if h.raw != raw {
 		if h.raw != "" && !set.IssuedAt.After(h.set.IssuedAt) {
 			return ErrStale
@@ -198,6 +237,9 @@ func (h *Hub) takeState(name string) held {
 func (h *Hub) Resume(name string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if !h.loaded {
+		return ErrNotLoaded
+	}
 	r, ok := h.running[name]
 	if !ok {
 		return ErrUnknown

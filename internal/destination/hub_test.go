@@ -287,15 +287,13 @@ func TestRunAgainGoesOnAfterAStoreFailure(t *testing.T) {
 	store := newMemStore()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h, err := NewHub(ctx, f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := NewHub(f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+	eventually(t, "the hub to load", h.isLoaded)
 	if err := h.Put(ctx, setToken(t, now.Unix(), hook(rc.server.URL))); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- h.Run(ctx) }()
 	started(t, store, "orders-hook")
 	store.mu.Lock()
 	store.failPuts = 1
@@ -338,10 +336,7 @@ func TestRunAgainSavesTheStateTheLastRunCouldNot(t *testing.T) {
 	for i := range 3 {
 		order(f, pglogrepl.LSN(120+i), "1", "", "open")
 	}
-	h, err := NewHub(ctx, f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := NewHub(f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
 	// The destination fell behind the feed, and saving it as gone fails.
 	store.failPuts = 1
 	if err := h.Run(ctx); err == nil || errors.Is(err, context.Canceled) {
@@ -354,6 +349,40 @@ func TestRunAgainSavesTheStateTheLastRunCouldNot(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- h.Run(ctx) }()
 	eventually(t, "the destination stored as gone", func() bool { s, _ := store.state("orders-hook"); return s.Status == Gone })
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second run ended with %v", err)
+	}
+}
+
+func TestRunAgainLoadsWhatTheLastRunCouldNot(t *testing.T) {
+	f := newFeed(t, 100)
+	rc := newReceiver(t, ok)
+	store := newMemStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw := setToken(t, now.Unix(), hook(rc.server.URL))
+	store.PutDefinitions(ctx, "shop", raw)
+	store.PutState(ctx, "shop", "orders-hook", State{Position: positionAt(100), Status: Active})
+	order(f, 120, "1", "", "open")
+	h := NewHub(f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
+	store.failDefinitions = 1
+	if err := h.Run(ctx); err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("run ended with %v, want the store's failure", err)
+	}
+	if err := h.Put(ctx, setToken(t, now.Unix()-1)); !errors.Is(err, ErrNotLoaded) {
+		t.Fatalf("put before the load: %v, want ErrNotLoaded", err)
+	}
+	if err := h.Resume("orders-hook"); !errors.Is(err, ErrNotLoaded) {
+		t.Fatalf("resume before the load: %v, want ErrNotLoaded", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+	eventually(t, "the change after the kept cursor", delivered(rc, 1))
+	if err := h.Put(ctx, setToken(t, now.Unix()-1)); !errors.Is(err, ErrStale) {
+		t.Fatalf("put of an older set after the load: %v, want ErrStale", err)
+	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("second run ended with %v", err)
