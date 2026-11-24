@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PrototeamHQ/protobase-changes/internal/destination"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/stream"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
@@ -24,22 +25,27 @@ const (
 	writeTimeout = 30 * time.Second
 )
 
-// Server serves the feeds of the apps it follows, by app name.
+// Server serves the feeds of the apps it follows, by app name, and takes
+// the destinations of those that keep them.
 type Server struct {
 	feeds map[string]*feed.Feed
+	hubs  map[string]*destination.Hub
 	now   func() time.Time
 	// keepalive and pollTimeout are fields so tests can shorten them.
 	keepalive   time.Duration
 	pollTimeout time.Duration
 }
 
-func New(feeds map[string]*feed.Feed) *Server {
-	return &Server{feeds: feeds, now: time.Now, keepalive: keepalive, pollTimeout: pollTimeout}
+// New serves the feeds, and the destinations of the apps that have a hub.
+func New(feeds map[string]*feed.Feed, hubs map[string]*destination.Hub) *Server {
+	return &Server{feeds: feeds, hubs: hubs, now: time.Now, keepalive: keepalive, pollTimeout: pollTimeout}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(changesPattern, s.changes)
+	mux.HandleFunc(destinationsPattern, s.putDestinations)
+	mux.HandleFunc(resumePattern, s.resume)
 	return mux
 }
 

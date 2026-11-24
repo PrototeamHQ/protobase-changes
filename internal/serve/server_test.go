@@ -48,7 +48,7 @@ func newFixture(t *testing.T) fixture {
 	if _, err := f.Resume(cursor.Epoch{SystemID: 1, Timeline: 1}, 100, 100); err != nil {
 		t.Fatal(err)
 	}
-	s := New(map[string]*feed.Feed{"shop": f})
+	s := New(map[string]*feed.Feed{"shop": f}, nil)
 	s.keepalive = 50 * time.Millisecond
 	s.pollTimeout = 50 * time.Millisecond
 	srv := httptest.NewServer(s.Handler())

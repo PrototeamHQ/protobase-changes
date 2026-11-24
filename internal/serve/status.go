@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/cursor"
+	"github.com/PrototeamHQ/protobase-changes/internal/destination"
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 	"github.com/PrototeamHQ/protobase-changes/internal/stream"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
@@ -39,6 +40,18 @@ func status(err error) (int, string) {
 		return http.StatusBadRequest, "invalid cursor"
 	case errors.Is(err, stream.ErrGone):
 		return http.StatusGone, "the changes after this cursor are no longer held; resync from a snapshot"
+	case errors.Is(err, errNoStore):
+		return http.StatusNotFound, "the app keeps no destinations"
+	case errors.Is(err, destination.ErrInvalidToken):
+		return http.StatusUnauthorized, "invalid token"
+	case errors.Is(err, destination.ErrDefinitions):
+		return http.StatusBadRequest, "invalid destinations"
+	case errors.Is(err, destination.ErrStale):
+		return http.StatusConflict, "a set issued later is kept"
+	case errors.Is(err, destination.ErrUnknown):
+		return http.StatusNotFound, "unknown destination"
+	case errors.Is(err, errTooLarge):
+		return http.StatusRequestEntityTooLarge, "the token is too large"
 	case errors.Is(err, feed.ErrNotReady):
 		return http.StatusServiceUnavailable, "the change stream has not caught up"
 	}
