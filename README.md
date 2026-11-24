@@ -249,7 +249,7 @@ The app revokes a session with a `protobase_revoke` message in the transaction t
 
 ### Answers
 
-- `400`: an invalid cursor, or a token with conditions.
+- `400`: an invalid cursor, or invalid subscription conditions.
 - `401`: no valid token for the app, an expired one, or a revoked session. Every invalid token gets the same answer.
 - `404`: no app of that name.
 - `410`: the cursor can no longer resume.
