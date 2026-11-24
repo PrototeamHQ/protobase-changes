@@ -191,7 +191,9 @@ func connect(ctx context.Context, url string) (*pgconn.PgConn, error) {
 func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglogrepl.LSN, interval time.Duration) error {
 	dec := decode.New(r.log)
 	nextStatus := time.Now()
-	// readOn is when the app's quota lets the stream read the next message.
+	// pending is a transaction the app's quota holds back until readOn, when
+	// the feed takes it in whole and the stream reads on.
+	var pending *change.Transaction
 	readOn := time.Now()
 	for {
 		if !time.Now().Before(nextStatus) {
@@ -208,6 +210,10 @@ func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglog
 				return err
 			}
 			continue
+		}
+		if pending != nil {
+			r.sink.Append(pending)
+			pending = nil
 		}
 
 		recvCtx, cancel := context.WithDeadline(ctx, nextStatus)
@@ -229,11 +235,14 @@ func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglog
 		case *pgproto3.NoticeResponse:
 			// Informational, such as logical decoding progress at a verbose client_min_messages.
 		case *pgproto3.CopyData:
-			pos, reply, changes, err := r.copyData(dec, m.Data)
+			pos, reply, tx, err := r.copyData(dec, m.Data)
 			if err != nil {
 				return err
 			}
-			readOn = r.throttle.take(changes, time.Now())
+			if tx != nil {
+				pending = tx
+				readOn = r.throttle.take(len(tx.Changes), time.Now())
+			}
 			received = max(received, pos)
 			if reply {
 				nextStatus = time.Now()
@@ -245,43 +254,38 @@ func (r *Reader) stream(ctx context.Context, conn *pgconn.PgConn, received pglog
 }
 
 // copyData handles one message of the stream, returning the WAL position it
-// reaches, whether the server asked for a status update and how many row
-// changes it took in.
-func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool, int, error) {
+// reaches, whether the server asked for a status update and the transaction
+// it completed, if any.
+func (r *Reader) copyData(dec *decode.Decoder, data []byte) (pglogrepl.LSN, bool, *change.Transaction, error) {
 	if len(data) == 0 {
-		return 0, false, 0, errors.New("empty replication message")
+		return 0, false, nil, errors.New("empty replication message")
 	}
 	switch data[0] {
 	case pglogrepl.PrimaryKeepaliveMessageByteID:
 		ka, err := pglogrepl.ParsePrimaryKeepaliveMessage(data[1:])
 		if err != nil {
-			return 0, false, 0, err
+			return 0, false, nil, err
 		}
 		// A logical walsender's keepalive carries where it has decoded and
 		// sent up to, so every transaction committed before it has come.
 		r.sink.Decoded(ka.ServerWALEnd)
-		return ka.ServerWALEnd, ka.ReplyRequested, 0, nil
+		return ka.ServerWALEnd, ka.ReplyRequested, nil, nil
 	case pglogrepl.XLogDataByteID:
 		xld, err := pglogrepl.ParseXLogData(data[1:])
 		if err != nil {
-			return 0, false, 0, err
+			return 0, false, nil, err
 		}
 		msg, err := pglogrepl.Parse(xld.WALData)
 		if err != nil {
-			return 0, false, 0, fmt.Errorf("parse pgoutput message: %w", err)
+			return 0, false, nil, fmt.Errorf("parse pgoutput message: %w", err)
 		}
 		tx, err := dec.Decode(msg)
 		if err != nil {
-			return 0, false, 0, err
+			return 0, false, nil, err
 		}
-		changes := 0
-		if tx != nil {
-			r.sink.Append(tx)
-			changes = len(tx.Changes)
-		}
-		return xld.WALStart + pglogrepl.LSN(len(xld.WALData)), false, changes, nil
+		return xld.WALStart + pglogrepl.LSN(len(xld.WALData)), false, tx, nil
 	}
-	return 0, false, 0, fmt.Errorf("unknown replication message type %q", data[0])
+	return 0, false, nil, fmt.Errorf("unknown replication message type %q", data[0])
 }
 
 // sendStatus reports what was received, but as flushed only what Confirm allowed.

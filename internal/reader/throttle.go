@@ -20,8 +20,9 @@ func newThrottle(perSecond *int) throttle {
 	return throttle{limit: rate.NewLimiter(rate.Limit(*perSecond), *perSecond)}
 }
 
-// take counts n changes taken in at now and returns when the stream may
-// read on. A transaction larger than a second's worth is counted in parts.
+// take counts a transaction of n changes read at now and returns when the
+// stream may take it in and read on. A transaction larger than a second's
+// worth is counted in parts.
 func (t throttle) take(n int, now time.Time) time.Time {
 	if t.limit == nil {
 		return now
