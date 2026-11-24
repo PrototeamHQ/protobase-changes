@@ -128,15 +128,22 @@ func TestDeliversFromTheDatabase(t *testing.T) {
 	hubCtx, stopHub := context.WithCancel(ctx)
 	hubDone := make(chan error, 1)
 	go func() { hubDone <- hub.Run(hubCtx) }()
+	select {
+	case <-hub.Ready():
+	case err := <-hubDone:
+		stopHub()
+		t.Fatalf("the hub stopped before it loaded: %v", err)
+	case <-ctx.Done():
+		stopHub()
+		<-hubDone
+		t.Fatal("timed out waiting for the hub to load")
+	}
 	defer func() {
 		stopHub()
 		if err := <-hubDone; !errors.Is(err, context.Canceled) {
 			t.Errorf("hub stopped: %v", err)
 		}
 	}()
-	for !hub.Loaded() {
-		time.Sleep(10 * time.Millisecond)
-	}
 	srv := httptest.NewServer(serve.New(map[string]*feed.Feed{"shop": f}, map[string]*destination.Hub{"shop": hub}).Handler())
 	defer srv.Close()
 

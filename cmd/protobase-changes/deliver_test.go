@@ -72,10 +72,15 @@ func TestAnUnmigratedStoreHoldsBackOnlyItsHub(t *testing.T) {
 	defer closeStores(ss)
 	hs = hubs(cfg, fs, ss, log)
 	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- hs["shop"].Run(runCtx) }()
-	for !hs["shop"].Loaded() {
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-hs["shop"].Ready():
+	case err := <-done:
+		t.Fatalf("run after migrate ended before it loaded: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the hub to load")
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {

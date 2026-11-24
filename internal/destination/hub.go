@@ -36,8 +36,10 @@ type Hub struct {
 
 	mu sync.Mutex
 	// loaded is whether the kept set and states were read; until then the
-	// hub takes no put, which could replace a set issued later.
+	// hub takes no put, which could replace a set issued later. ready closes
+	// once they are.
 	loaded bool
+	ready  chan struct{}
 	raw    string
 	set    Set
 	// states holds the states of destinations that do not run yet, until a
@@ -68,6 +70,7 @@ func NewHub(f *feed.Feed, store Store, sender *Sender, log *slog.Logger) *Hub {
 	return &Hub{
 		app: f.App, feed: f, store: store, sender: sender, log: log.With("app", f.App.Name),
 		delays: retryDelays, now: time.Now, running: map[string]*running{}, removed: map[string]bool{},
+		ready: make(chan struct{}),
 	}
 }
 
@@ -75,7 +78,7 @@ func NewHub(f *feed.Feed, store Store, sender *Sender, log *slog.Logger) *Hub {
 // A kept set that no key of the app opens any longer leaves the app without
 // destinations until it puts a new one, and their states wait for it.
 func (h *Hub) load(ctx context.Context) error {
-	if h.Loaded() {
+	if h.isLoaded() {
 		return nil
 	}
 	if err := h.store.Check(ctx); err != nil {
@@ -103,12 +106,15 @@ func (h *Hub) load(ctx context.Context) error {
 	}
 	h.mu.Lock()
 	h.raw, h.set, h.states, h.loaded = raw, set, states, true
+	close(h.ready)
 	h.mu.Unlock()
 	return nil
 }
 
-// Loaded is whether a run read the app's kept set and states.
-func (h *Hub) Loaded() bool {
+// Ready closes once a run has read the app's kept set and states.
+func (h *Hub) Ready() <-chan struct{} { return h.ready }
+
+func (h *Hub) isLoaded() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.loaded

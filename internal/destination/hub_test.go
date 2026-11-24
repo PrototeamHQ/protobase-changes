@@ -290,7 +290,7 @@ func TestRunAgainGoesOnAfterAStoreFailure(t *testing.T) {
 	h := NewHub(f, store, &Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
 	done := make(chan error, 1)
 	go func() { done <- h.Run(ctx) }()
-	eventually(t, "the hub to load", h.Loaded)
+	eventually(t, "the hub to load", h.isLoaded)
 	if err := h.Put(ctx, setToken(t, now.Unix(), hook(rc.server.URL))); err != nil {
 		t.Fatal(err)
 	}

@@ -34,18 +34,22 @@ func destinationServer(t *testing.T) (url string, kept *store.SQL) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	hub := destination.NewHub(fx.feed, kept, &destination.Sender{Client: http.DefaultClient, Now: time.Now}, quiet)
 	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		hub.Run(runCtx)
-	}()
+	done := make(chan error, 1)
+	go func() { done <- hub.Run(runCtx) }()
+	select {
+	case <-hub.Ready():
+	case err := <-done:
+		cancel()
+		t.Fatalf("the hub stopped before it loaded: %v", err)
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for the hub to load")
+	}
 	t.Cleanup(func() {
 		cancel()
 		<-done
 	})
-	for !hub.Loaded() {
-		time.Sleep(5 * time.Millisecond)
-	}
 	s := New(map[string]*feed.Feed{"shop": fx.feed, "blog": fx.feed}, map[string]*destination.Hub{"shop": hub})
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)

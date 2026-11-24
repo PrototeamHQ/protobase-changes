@@ -211,7 +211,7 @@ func startHub(t *testing.T, f *feed.Feed, store Store, raw string, functions str
 			t.Errorf("hub stopped: %v", err)
 		}
 	})
-	eventually(t, "the hub to load", h.Loaded)
+	eventually(t, "the hub to load", h.isLoaded)
 	if raw != "" {
 		if err := h.Put(ctx, raw); err != nil {
 			t.Fatal(err)
