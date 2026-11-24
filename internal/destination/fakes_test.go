@@ -3,6 +3,7 @@ package destination
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,8 @@ type memStore struct {
 	states  map[string]State
 	letters []Letter
 	writes  int
+	// failDeletes fails that many deletes before the next succeeds.
+	failDeletes int
 }
 
 func newMemStore() *memStore { return &memStore{raw: map[string]string{}, states: map[string]State{}} }
@@ -72,6 +75,10 @@ func (m *memStore) PutState(_ context.Context, _ string, name string, s State) e
 func (m *memStore) DeleteState(_ context.Context, _ string, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failDeletes > 0 {
+		m.failDeletes--
+		return errors.New("the store is down")
+	}
 	delete(m.states, name)
 	return nil
 }

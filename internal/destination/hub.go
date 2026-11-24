@@ -34,8 +34,11 @@ type Hub struct {
 	mu  sync.Mutex
 	raw string
 	set Set
-	// states holds the stored states until Run hands them to workers.
-	states  map[string]State
+	// states holds the stored states of destinations that do not run yet,
+	// until a worker takes one or a set removes its destination.
+	states map[string]State
+	// removed names the destinations whose stored state is still to delete.
+	removed map[string]bool
 	ctx     context.Context
 	errs    chan error
 	running map[string]*running
@@ -53,7 +56,7 @@ type running struct {
 func NewHub(ctx context.Context, f *feed.Feed, store Store, sender *Sender, log *slog.Logger) (*Hub, error) {
 	h := &Hub{
 		app: f.App, feed: f, store: store, sender: sender, log: log.With("app", f.App.Name),
-		delays: retryDelays, now: time.Now, running: map[string]*running{},
+		delays: retryDelays, now: time.Now, running: map[string]*running{}, removed: map[string]bool{},
 	}
 	raw, err := store.Definitions(ctx, h.app.Name)
 	if err != nil {
@@ -81,9 +84,8 @@ func (h *Hub) Run(ctx context.Context) error {
 	h.mu.Lock()
 	h.ctx, h.errs = ctx, make(chan error, 1)
 	for _, d := range h.set.Destinations {
-		h.startLocked(d, h.states[d.Name])
+		h.startLocked(d, h.takeState(d.Name))
 	}
-	h.states = nil
 	h.mu.Unlock()
 
 	var err error
@@ -104,7 +106,8 @@ func (h *Hub) Run(ctx context.Context) error {
 
 // Put replaces the app's destinations with the set raw defines. A
 // destination of the same name keeps its cursor, one the set leaves out
-// loses its state, and a new one starts at the newest change.
+// loses its state, and a new one starts at the newest change. Putting the
+// kept set again finishes what an earlier put of it left undone.
 func (h *Hub) Put(ctx context.Context, raw string) error {
 	set, err := OpenSet(raw, h.feed.Keys, h.app.Issuer)
 	if err != nil {
@@ -112,29 +115,43 @@ func (h *Hub) Put(ctx context.Context, raw string) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.raw == raw {
-		return nil
+	if h.raw != raw {
+		if h.raw != "" && !set.IssuedAt.After(h.set.IssuedAt) {
+			return ErrStale
+		}
+		if err := h.store.PutDefinitions(ctx, h.app.Name, raw); err != nil {
+			return fmt.Errorf("store: %w", err)
+		}
+		h.raw = raw
+		h.replaceLocked(set)
 	}
-	if h.raw != "" && !set.IssuedAt.After(h.set.IssuedAt) {
-		return ErrStale
+	for name := range h.removed {
+		if err := h.store.DeleteState(ctx, h.app.Name, name); err != nil {
+			return fmt.Errorf("store: %w", err)
+		}
+		delete(h.removed, name)
 	}
-	if err := h.store.PutDefinitions(ctx, h.app.Name, raw); err != nil {
-		return fmt.Errorf("store: %w", err)
-	}
+	return nil
+}
+
+// replaceLocked runs the set's destinations, from their kept state where
+// they have one, and marks the state of those it leaves out for deletion.
+// Before Run, it only marks them: Run starts the rest.
+func (h *Hub) replaceLocked(set Set) {
 	old := map[string]*Definition{}
 	for _, d := range h.set.Destinations {
 		old[d.Name] = d
 	}
-	h.raw, h.set = raw, set
-	if h.ctx == nil {
-		return h.dropStored(ctx)
-	}
-
+	h.set = set
 	kept := map[string]bool{}
 	for _, d := range set.Destinations {
 		kept[d.Name] = true
+		delete(h.removed, d.Name)
+		if h.ctx == nil {
+			continue
+		}
 		if _, ok := h.running[d.Name]; !ok {
-			h.startLocked(d, State{})
+			h.startLocked(d, h.takeState(d.Name))
 			continue
 		}
 		if old[d.Name].digest != d.digest {
@@ -142,34 +159,24 @@ func (h *Hub) Put(ctx context.Context, raw string) error {
 		}
 	}
 	for name := range h.running {
-		if kept[name] {
-			continue
+		if !kept[name] {
+			h.stopLocked(name)
+			h.removed[name] = true
 		}
-		h.stopLocked(name)
-		if err := h.store.DeleteState(ctx, h.app.Name, name); err != nil {
-			return fmt.Errorf("store: %w", err)
-		}
-	}
-	return nil
-}
-
-// dropStored drops the stored states of destinations a set put before Run
-// leaves out; Run starts the rest.
-func (h *Hub) dropStored(ctx context.Context) error {
-	kept := map[string]bool{}
-	for _, d := range h.set.Destinations {
-		kept[d.Name] = true
 	}
 	for name := range h.states {
-		if kept[name] {
-			continue
-		}
-		delete(h.states, name)
-		if err := h.store.DeleteState(ctx, h.app.Name, name); err != nil {
-			return fmt.Errorf("store: %w", err)
+		if !kept[name] {
+			delete(h.states, name)
+			h.removed[name] = true
 		}
 	}
-	return nil
+}
+
+// takeState hands a destination's kept state to its worker, or none.
+func (h *Hub) takeState(name string) State {
+	state := h.states[name]
+	delete(h.states, name)
+	return state
 }
 
 // Resume wakes a paused or gone destination, or tries a failed batch now.
