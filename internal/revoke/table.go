@@ -11,7 +11,10 @@ import (
 // Table is where the app revokes a session: one row of sid and exp, the Unix
 // time its last token expires, inserted in the transaction that ends the
 // session. Postgres keeps the rows when a slot loses its WAL, so a stream of
-// a new slot reads them before it serves.
+// a new slot reads them before it serves. It replaced a protobase_revoke
+// logical message before any release and before any app emitted one, so no
+// revocation in force exists only as a message, and none is read: a message
+// alone would be lost with the WAL again.
 var Table = change.Table{Schema: "changes", Name: "revocations"}
 
 // Revocation is one row of Table.
