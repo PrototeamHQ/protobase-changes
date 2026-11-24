@@ -18,6 +18,8 @@ type App struct {
 	Publication string `json:"publication"`
 	// TailTransactions bounds how many committed transactions stay in memory.
 	TailTransactions int `json:"tail_transactions"`
+	// Archive is optional: without it, nothing confirms the slot.
+	Archive *Archive `json:"archive"`
 }
 
 type Config struct {
@@ -66,6 +68,11 @@ func (c Config) validate() error {
 		}
 		if app.TailTransactions < 1 {
 			return fmt.Errorf("config: app %q tail_transactions must be at least 1", app.Name)
+		}
+		if app.Archive != nil {
+			if err := app.Archive.validate(app.Name); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
