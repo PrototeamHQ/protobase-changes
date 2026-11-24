@@ -70,8 +70,9 @@ func hubs(ctx context.Context, cfg config.Config, fs map[string]*feed.Feed, ss m
 	return out, nil
 }
 
-// deliver runs every hub until ctx ends. A hub that fails runs again after a
-// wait, on its own, so one app's store holds back no other app.
+// deliver runs every hub until ctx ends, also when there are none. A hub that
+// fails runs again after a wait, on its own, so one app's store holds back no
+// other app.
 func deliver(ctx context.Context, hs map[string]*destination.Hub, log *slog.Logger) error {
 	var wg sync.WaitGroup
 	for app, h := range hs {
@@ -81,6 +82,7 @@ func deliver(ctx context.Context, hs map[string]*destination.Hub, log *slog.Logg
 			})
 		})
 	}
+	<-ctx.Done()
 	wg.Wait()
 	return ctx.Err()
 }
