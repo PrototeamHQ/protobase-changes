@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/table"
@@ -17,6 +18,9 @@ import (
 // renamed column is gone, and an added or promoted field already holds.
 func evolve(ctx context.Context, tbl *table.Table, ops []schemaOp) (*table.Table, error) {
 	for _, op := range ops {
+		// The schema update appends to a path it renames, which would
+		// overwrite the operation's own.
+		op.path = slices.Clone(op.path)
 		txn := tbl.NewTransaction()
 		u := txn.UpdateSchema(true, false)
 		switch op.kind {
@@ -25,7 +29,10 @@ func evolve(ctx context.Context, tbl *table.Table, ops []schemaOp) (*table.Table
 		case opAddField:
 			u.AddColumn([]string{op.path[0], op.name}, op.typ, "", false, nil)
 		case opRename:
-			u.RenameColumn(op.path, op.name)
+			u.UpdateColumn(op.path, table.ColumnUpdate{
+				Name: iceberg.Optional[string]{Valid: true, Val: op.name},
+				Doc:  iceberg.Optional[string]{Valid: true, Val: op.doc},
+			})
 		case opRetire:
 			u.UpdateColumn(op.path, table.ColumnUpdate{
 				Name: iceberg.Optional[string]{Valid: true, Val: op.name},

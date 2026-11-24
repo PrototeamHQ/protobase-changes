@@ -17,6 +17,7 @@ const retiredDoc = "Retired: the values of an earlier column, before it changed 
 type field struct {
 	name string
 	typ  iceberg.Type
+	doc  string
 	// retired is a field moved aside, which no column writes to again.
 	retired bool
 }
@@ -64,6 +65,8 @@ type schemaOp struct {
 	path []string
 	// name is the added field, or the new name of a renamed or retired one.
 	name string
+	// doc is a renamed field's doc.
+	doc string
 	// typ is the added field's or struct's type, or the promoted type.
 	typ iceberg.Type
 }
@@ -84,7 +87,7 @@ func shapeOf(schema *iceberg.Schema) *shape {
 		if f, ok := schema.FindFieldByName(name); ok {
 			rs.exists = true
 			for _, sub := range f.Type.(*iceberg.StructType).FieldList {
-				rs.fields = append(rs.fields, &field{name: sub.Name, typ: sub.Type, retired: sub.Doc == retiredDoc})
+				rs.fields = append(rs.fields, &field{name: sub.Name, typ: sub.Type, doc: sub.Doc, retired: sub.Doc == retiredDoc})
 			}
 		}
 		s.structs[name] = rs
@@ -155,21 +158,38 @@ func (s *shape) addField(rs *rowStruct, name string, t iceberg.Type) *field {
 	return f
 }
 
+// renamedDoc is the doc of a field the rename at position at named to, from
+// column from, which tells it apart from a field of an earlier column of
+// that name when the rename is applied again.
+func renamedDoc(from string, at position) string {
+	return fmt.Sprintf("Renamed from %s at WAL position %s.", from, at)
+}
+
 // rename renames column from to to in every struct that has it, keeping
 // its field id. A field already named to, such as of a dropped column, is
-// retired first.
-func (s *shape) rename(from, to string) {
+// retired first, also in a struct without from: to names the renamed column
+// from then on. A field this rename already named, as when the rename is
+// applied again after its schema updates, stays.
+func (s *shape) rename(from, to string, at position) {
+	if from == to {
+		return
+	}
+	doc := renamedDoc(from, at)
 	for _, name := range rowStructs {
 		rs := s.structs[name]
 		f := rs.find(from)
-		if f == nil || from == to {
+		if f == nil {
+			if other := rs.find(to); other != nil && other.doc != doc {
+				s.retire(rs, other, map[string]bool{to: true})
+			}
 			continue
 		}
 		if other := rs.holder(to); other != nil {
 			s.retire(rs, other, map[string]bool{to: true})
 		}
-		s.ops = append(s.ops, schemaOp{kind: opRename, path: []string{rs.name, f.name}, name: to})
+		s.ops = append(s.ops, schemaOp{kind: opRename, path: []string{rs.name, f.name}, name: to, doc: doc})
 		f.name = to
+		f.doc = doc
 	}
 }
 
@@ -182,6 +202,7 @@ func (s *shape) retire(rs *rowStruct, f *field, taken map[string]bool) {
 		if rs.holder(name) == nil && !taken[name] {
 			s.ops = append(s.ops, schemaOp{kind: opRetire, path: []string{rs.name, f.name}, name: name})
 			f.name = name
+			f.doc = retiredDoc
 			f.retired = true
 			return
 		}

@@ -190,7 +190,7 @@ Every change becomes one row of an Iceberg table per Postgres table, committed t
 - `segment_bytes`, `segment_seconds`: changes collect in memory until about `segment_bytes` of values or `segment_seconds` have passed since the first, at most 900, then go out as one Parquet file per table.
 - `retention_hours`: how long changes and table snapshots are kept, at most 2562047 (about 292 years).
 
-Each row holds `commit_lsn`, `xid`, `commit_time`, `seq` (the change's position in its transaction), `operation`, `actor` (the transaction's last `protobase_actor` message before the change), `unchanged` (the columns whose large values an update left unchanged and the WAL did not repeat), and three structs with a field per column: `key`, `old` and `new`, each null when the WAL sent no such row. A struct joins the table once a change has columns for it, as Parquet stores no empty struct. Booleans, integers, floats, bytea, dates, times and timestamps keep their types; every other type, such as numeric, uuid or json, is stored in its Postgres text format. <gap>A timestamp after the year 294246 stops the archive because Iceberg counts microseconds from 1970 and storing such a timestamp in another form is not implemented.</gap>
+Each row holds `commit_lsn`, `xid`, `commit_time`, `seq` (the change's position in its transaction), `operation`, `actor` (the transaction's last `protobase_actor` message before the change), `unchanged` (the columns whose large values an update left unchanged and the WAL did not repeat), and three structs with a field per column: `key`, `old` and `new`, each null when the WAL sent no such row. A struct joins the table once a change has columns for it, as Parquet stores no empty struct. Booleans, integers, floats, bytea, dates and timestamps keep their types; every other type, such as numeric, uuid, json or time, is stored in its Postgres text format. A time stays text because Postgres allows `24:00:00`, which an Iceberg time cannot hold. <gap>A timestamp after the year 294246 stops the archive because Iceberg counts microseconds from 1970 and storing such a timestamp in another form is not implemented.</gap>
 
 Tables are partitioned by the hour of `commit_time`. Once an hour, every table of the app drops the hours that ended before its retention began, expires the snapshots older than the retention, and merges each finished hour's segment files.
 
@@ -206,7 +206,7 @@ Tables are partitioned by the hour of `commit_time`. Once an hour, every table o
     '{"rename":{"schema":"public","table":"messages","from":"text","to":"body"}}');
   ```
 
-  Without it, the new name becomes a new field.
+  Without it, the new name becomes a new field. The renamed field's doc names the rename and its WAL position, and any other field of the new name, in any of the three structs, moves aside.
 
 **Durability:** a segment commits table by table, each in one catalog commit together with the position it reached, and the slot is confirmed only after every table of the segment committed. A schema change splits a table's commit: the rows before it commit first, then each of its schema updates in a catalog commit of its own, then the rows after it, so the rows of every commit name the fields of the schema they commit with. After a crash the service reads the unconfirmed changes again, and each table skips what it already holds, so nothing is lost or archived twice. The archive must keep up with the tail: when the tail drops a transaction the archive has not read, the service stops, and the next start reads it again from the slot. <gap>An idle app database holds the server's WAL from its last change because confirming positions past the last transaction is not implemented.</gap> <gap>Personal fields cannot be erased from the archive because per-person encryption is not implemented.</gap>
 
@@ -297,7 +297,7 @@ The service holds the last `tail_transactions` transactions in memory, from wher
 
 ### Revocation
 
-The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. <gap>Revocations cannot outlive a restart once the archive confirms the slot because rebuilding them from the archive is not implemented.</gap>
+The app revokes a session with a `protobase_revoke` message in the transaction that ends it. A stream of that session stops before any change committed after the revocation, and new requests get `401`. A stream also ends when its token expires, and the consumer reconnects with a fresh token and its cursor. The service remembers a revoked session until the `exp` the message gives. The archive never confirms the slot past a revocation until that `exp`, so after a restart the stream reads every revocation still in force again before it serves; a far `exp` keeps the WAL from that revocation on as long.
 
 ### Answers
 

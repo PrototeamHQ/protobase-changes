@@ -66,7 +66,7 @@ func TestEvolveKeepsFieldIDs(t *testing.T) {
 
 	// Rename text to body, widen id and n, and turn n into json: a new field.
 	s = shapeOf(v1)
-	s.rename("text", "body")
+	s.rename("text", "body", position{lsn: 100})
 	second := []change.Column{col("id", oidInt8, true), col("body", oidText, false), col("n", oidJSON, false), col("extra", oidBool, false)}
 	s.columns(structKey, second)
 	s.columns(structNew, second)
@@ -105,7 +105,7 @@ func TestRenameOntoAnExistingName(t *testing.T) {
 
 	// a was dropped, and b renamed to a.
 	s = shapeOf(v1)
-	s.rename("b", "a")
+	s.rename("b", "a", position{lsn: 100})
 	got := s.columns(structNew, []change.Column{col("a", oidText, false)})
 	v2 := staged(t, v1, s.ops)
 	if id, _ := fieldID(t, v2, "new.a"); id != bID {
@@ -119,10 +119,44 @@ func TestRenameOntoAnExistingName(t *testing.T) {
 	}
 }
 
+// b was the key and was dropped, and a is renamed to b and made the key: the
+// key's b belongs to the dropped column, though the key never held a.
+func TestRenameRetiresAnEarlierColumnOfTheNewName(t *testing.T) {
+	s := shapeOf(baseSchema())
+	s.columns(structKey, []change.Column{col("b", oidInt4, true)})
+	s.columns(structNew, []change.Column{col("a", oidText, false), col("b", oidInt4, true)})
+	v1 := staged(t, baseSchema(), s.ops)
+	keyB, _ := fieldID(t, v1, "key.b")
+	aID, _ := fieldID(t, v1, "new.a")
+
+	at := position{lsn: 200, step: 1}
+	s = shapeOf(v1)
+	s.rename("a", "b", at)
+	ops := s.ops
+
+	// Applied again after all of its schema updates, or only some, as after
+	// a crash, the rename finishes without retiring the field it renamed.
+	for n := range len(ops) + 1 {
+		partial := staged(t, v1, ops[:n])
+		s = shapeOf(partial)
+		s.rename("a", "b", at)
+		v2 := staged(t, partial, s.ops)
+		if _, ok := v2.FindFieldByName("key.b"); ok {
+			t.Errorf("after %d of %d updates: the dropped column's key.b stayed live", n, len(ops))
+		}
+		if id, _ := fieldID(t, v2, "key.b__1"); id != keyB {
+			t.Errorf("after %d of %d updates: key.b__1 has id %d, want the dropped b's %d", n, len(ops), id, keyB)
+		}
+		if id, _ := fieldID(t, v2, "new.b"); id != aID {
+			t.Errorf("after %d of %d updates: new.b has id %d, want a's %d", n, len(ops), id, aID)
+		}
+	}
+}
+
 func TestRenameOfAFieldAddedInTheSameSegment(t *testing.T) {
 	s := shapeOf(baseSchema())
 	before := s.columns(structNew, []change.Column{col("a", oidText, false)})
-	s.rename("a", "b")
+	s.rename("a", "b", position{lsn: 100})
 	after := s.columns(structNew, []change.Column{col("b", oidText, false), col("a", oidInt4, false)})
 	v := staged(t, baseSchema(), s.ops)
 	if before["a"] != after["b"] || before["a"].name != "b" {
