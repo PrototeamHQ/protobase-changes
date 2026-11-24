@@ -127,7 +127,7 @@ protobase-changes --config changes.json
 
 - **Download:** one binary or container image per GitHub release, like the relay.
 - **State:** destination cursors go in a `changes` schema in your app's database, or in a SQLite file.
-- **Updates:** `protobase-changes --config changes.json --migrate` applies the schema of each app database, its [revocations](#revocation) table, and of each store, then exits. Run it at each update, before the new version starts; it applies what is missing in one transaction per database, so a failure leaves that database as it was. Startup never migrates: an app whose database or store is behind serves or delivers nothing until it is migrated, and the other apps run.
+- **Updates:** `protobase-changes --config changes.json --migrate` applies the schema of each app database, its [revocations](#revocation) table, and of each store, then exits. Run it at each update, before the new version starts; it applies what is missing in one transaction for each app database and one for each store, also when they share a database. A failure leaves what that transaction would have changed as it was, while what an earlier transaction applied stays. Startup never migrates: an app whose database or store is behind serves or delivers nothing until it is migrated, and the other apps run.
 - **Archive:** any S3-compatible bucket or a local directory.
 
 ### Configuration
@@ -229,7 +229,7 @@ Tables are partitioned by the hour of `commit_time`. Once an hour, every table o
   ```
 
   Startup stops when it is missing or skips inserts, updates, deletes or truncates. Once it exists, Postgres refuses UPDATE and DELETE on a table without a primary key or another replica identity.
-- A role that may create the `changes` schema in each app database for `--migrate`. The service's role needs `USAGE` on the schema and `SELECT` on `changes.revocations`, and the app's role `USAGE`, `INSERT` and `DELETE`, granted once after the first `--migrate` when they are other roles.
+- A role that may create the `changes` schema in each app database for `--migrate`. The service's role needs `USAGE` on the schema and `SELECT` on `changes.revocations` and `changes.app_migrations`, and the app's role `USAGE`, `INSERT` and `DELETE` on `changes.revocations` and `SELECT` on its `exp` column, which its expired-row delete reads. Grant them once after the first `--migrate` when they are other roles.
 - With a Postgres `store`, a role that may create the `changes` schema for `--migrate`, and read and write its tables after.
 
 ### Row changes
