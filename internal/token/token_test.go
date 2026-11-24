@@ -8,6 +8,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
+	"github.com/PrototeamHQ/protobase-changes/internal/change"
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
 )
 
@@ -46,7 +47,7 @@ func TestOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	if tok.Subject != "u42" || tok.Session != "s9" || tok.Payload != Raw || tok.Cursor == nil || *tok.Cursor != 0x1A2B3C ||
-		!tok.Expiry.Equal(now.Add(time.Minute)) || len(tok.Resources) != 2 || !tok.Resources["billing.invoices"] {
+		!tok.Expiry.Equal(now.Add(time.Minute)) || !tok.Subscriptions.Has("messages") || !tok.Subscriptions.Has("billing.invoices") {
 		t.Fatalf("opened %+v", tok)
 	}
 }
@@ -90,10 +91,31 @@ func TestOpenRefuses(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesConditions(t *testing.T) {
+func TestOpenCompilesConditions(t *testing.T) {
 	c := valid()
-	c["subs"] = []map[string]any{{"resource": "messages", "where": map[string]any{"eq": []string{"channel_id", "xyz"}}}}
+	c["subs"] = []map[string]any{
+		{"resource": "messages", "where": map[string]any{"eq": []string{"channel_id", "xyz"}}},
+		{"resource": "messages", "where": nil},
+	}
+	tok, err := Open(seal(t, key, jose.A256GCM, c), ring, issuer, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(channel string) *change.Change {
+		return &change.Change{Operation: change.Insert, NewRow: change.Row{"channel_id": {Kind: change.Text, Text: channel}}}
+	}
+	if got := tok.Subscriptions.Match("messages", insert("xyz")); len(got) != 2 || got[0].ID != 0 || got[1].ID != 1 {
+		t.Fatalf("matched %+v", got)
+	}
+	if got := tok.Subscriptions.Match("messages", insert("abc")); len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("matched %+v", got)
+	}
+}
+
+func TestOpenRefusesBadConditions(t *testing.T) {
+	c := valid()
+	c["subs"] = []map[string]any{{"resource": "messages", "where": map[string]any{"like": []string{"channel_id", "x%"}}}}
 	if _, err := Open(seal(t, key, jose.A256GCM, c), ring, issuer, now); err != ErrConditions {
-		t.Fatalf("a subscription with conditions: %v", err)
+		t.Fatalf("a subscription with bad conditions: %v", err)
 	}
 }

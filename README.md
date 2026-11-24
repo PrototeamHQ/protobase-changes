@@ -91,7 +91,27 @@ The token is a JWE, encrypted with AES-256-GCM under a key that the app, the rel
 - `payload` sets the shape of each change: `thin` for live queries, `raw` for the stored rows a replica needs.
 - `cursor` marks the snapshot the list was read from, so no change slips between the read and the subscription. Each notice carries a fresh cursor to resume from.
 - `where` combines the request's filter, `channel_id`, with the access rule, `tenant_id`. protobase-changes only ever sees plain conditions like these.
-- `subs` lists each resource by table name, or as `schema.table` outside the public schema. A table whose schema or name holds a dot is never sent, since its resource could name another table too. There is no wildcard: a full replica lists every resource, so a table added later is never granted by accident. <gap>A subscription with `where` is refused with 400 because the condition matcher is not implemented.</gap>
+- `subs` lists each resource by table name, or as `schema.table` outside the public schema. A table whose schema or name holds a dot is never sent, since its resource could name another table too. There is no wildcard: a full replica lists every resource, so a table added later is never granted by accident.
+
+### Conditions
+
+A `where` is one condition on the changed row, an object of one operator:
+
+| Condition | Meets the row when |
+| --- | --- |
+| `{"eq": [column, value]}`, `neq`, `lt`, `lte`, `gt`, `gte` | the column `=`, `<>`, `<`, `<=`, `>`, `>=` the value |
+| `{"in": [column, [value, ...]]}` | the column equals one of the values |
+| `{"between": [column, low, high]}` | `low <= column <= high` |
+| `{"is_null": column}` | the column is null |
+| `{"and": [...]}`, `{"or": [...]}`, `{"not": condition}` | as in SQL |
+
+- A value is a string, a number or a boolean. A number compares numerically, so `12.5` meets `12.50`; a string compares with the column's text byte by byte, as under the C collation; a boolean compares with `t` or `f`.
+- Null works as in a SQL `WHERE`: comparing with it is unknown, and only a condition that holds lets a row in. So `neq` never meets a null; add `{"is_null": column}` with `or` for that.
+- A subscription that requires a column to equal a value, through `eq` or `in` joined by `and` at its top, is found by a hash lookup of the changed row's value. Only the others are tested against every change of their resource, so tokens should lead with such an equality, as the access rule's `tenant_id` gives.
+
+Each change goes out once, with every subscription of the token it concerns and what it did there: `enter` when the row meets the conditions now and did not before, `update` when it meets them now, and `leave` when it met them and no longer does or was deleted. A truncate leaves every subscription to its table. A row's values show only where a subscription has the row in: an `enter` carries no old row and a `leave` no new row.
+
+The old row decides `enter` and `leave`, and under the default replica identity the WAL holds only its key. Without it, an update the conditions let in comes as `update`, and an update or delete that may have left is not sent at all, since telling would show a row the subscription may not read. <gap>Under the default replica identity, a subscription on columns outside the key cannot learn of an update that left it or of a delete because looking up the old row is not implemented.</gap>
 
 Some rules need a subquery, such as "channels I belong to". The app turns the subquery's result into constants when it issues the token. Could that go stale? Yes. When a membership changes, the app calls `live.refresh({ user })`, and the token's expiry caps anything missed.
 
@@ -204,11 +224,13 @@ Every message is a CloudEvent in the structured JSON format, one per committed t
   "datacontenttype": "application/json", "cursor": "Ab3x...",
   "data": { "changes": [
     { "resource": "messages", "operation": "update", "key": { "id": "42" },
-      "new": { "id": "42", "body": "hey", "edited_at": null }, "actor": { "sub": "u42" } } ] }
+      "new": { "id": "42", "body": "hey", "edited_at": null }, "actor": { "sub": "u42" },
+      "subscriptions": [ { "id": 0, "effect": "update" } ] } ] }
 }
 ```
 
 - A `thin` payload holds the resource, operation and key; `raw` adds the old and new rows as the WAL states them, a truncate's `cascade` and `restart_identity`, and the actor of the last `protobase_actor` message before the change. A large value an update left unchanged is left out of `new`, never sent as null.
+- `subscriptions` names each subscription the change concerns by its position in the token's `subs`, with its effect, as [Conditions](#conditions) says.
 - The `id` stays the same on every replay of a transaction, so a consumer can drop a duplicate. It derives from the last key in `key_files`, so adding a new key first keeps it; retiring that last key changes every id.
 - A transaction the token may read nothing of sends nothing. When nothing was sent for 25 seconds, a `protobase.changes.position` event without data carries the cursor past what was skipped, which keeps the connection alive and the consumer's cursor current.
 
@@ -227,7 +249,7 @@ The app revokes a session with a `protobase_revoke` message in the transaction t
 
 ### Answers
 
-- `400`: an invalid cursor, or a token with conditions.
+- `400`: an invalid cursor, or invalid subscription conditions.
 - `401`: no valid token for the app, an expired one, or a revoked session. Every invalid token gets the same answer.
 - `404`: no app of that name.
 - `410`: the cursor can no longer resume.

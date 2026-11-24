@@ -180,8 +180,8 @@ func TestRefusals(t *testing.T) {
 		"bad token":    {ChangesPath("shop", ""), "abc", http.StatusUnauthorized},
 		"other issuer": {ChangesPath("shop", ""), seal(t, claims(func(c map[string]any) { c["iss"] = "https://blog.example" })), http.StatusUnauthorized},
 		"no session":   {ChangesPath("shop", ""), seal(t, claims(func(c map[string]any) { delete(c, "sid") })), http.StatusUnauthorized},
-		"conditions": {ChangesPath("shop", ""), seal(t, claims(func(c map[string]any) {
-			c["subs"] = []map[string]any{{"resource": "messages", "where": map[string]any{"eq": []string{"id", "1"}}}}
+		"bad conditions": {ChangesPath("shop", ""), seal(t, claims(func(c map[string]any) {
+			c["subs"] = []map[string]any{{"resource": "messages", "where": map[string]any{"like": []string{"id", "1%"}}}}
 		})), http.StatusBadRequest},
 		"bad cursor":    {ChangesPath("shop", "abc"), seal(t, claims(nil)), http.StatusBadRequest},
 		"forged cursor": {ChangesPath("shop", otherCodec.Seal(cursor.Position{Epoch: cursor.Epoch{SystemID: 1, Timeline: 1}, LSN: 130})), seal(t, claims(nil)), http.StatusBadRequest},

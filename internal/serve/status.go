@@ -34,7 +34,7 @@ func status(err error) (int, string) {
 	case errors.Is(err, stream.ErrRevoked):
 		return http.StatusUnauthorized, "the session was revoked"
 	case errors.Is(err, token.ErrConditions):
-		return http.StatusBadRequest, "conditions are not supported yet"
+		return http.StatusBadRequest, "invalid conditions"
 	case errors.Is(err, cursor.ErrInvalid):
 		return http.StatusBadRequest, "invalid cursor"
 	case errors.Is(err, stream.ErrGone):
