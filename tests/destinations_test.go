@@ -173,7 +173,20 @@ func TestDeliversFromTheDatabase(t *testing.T) {
 	}
 
 	// Each delivered batch wrote its destination's cursor once. Those writes
-	// are in the stream as well, and pass without a write of their own.
+	// are in the stream as well, and pass without a write of their own. The
+	// receivers answer before the cursors are saved, so wait for both saves:
+	// every past the last update, renames past the first.
+	var commits []string
+	entries, _ := f.Since(begin.LSN)
+	for _, e := range entries {
+		if len(e.Tx.Changes) > 0 && e.Tx.Changes[0].Table.Name == name {
+			commits = append(commits, e.Tx.CommitLSN.String())
+		}
+	}
+	if len(commits) != 3 {
+		t.Fatalf("the feed holds %d transactions of the table, want 3", len(commits))
+	}
+	waitSaved(t, ctx, db, map[string]string{"every": commits[2], "renames": commits[1]})
 	xmin := lastStateWrite(t, ctx, db)
 	waitFor(t, ctx, f, func() bool {
 		entries, _ := f.Since(begin.LSN)
@@ -199,6 +212,32 @@ func lastStateWrite(t *testing.T, ctx context.Context, db *pgx.Conn) uint32 {
 		t.Fatal(err)
 	}
 	return xmin
+}
+
+// waitSaved waits until each destination's saved cursor is at least at its
+// LSN: a batch also moves past the transactions it took nothing from.
+func waitSaved(t *testing.T, ctx context.Context, db *pgx.Conn, want map[string]string) {
+	t.Helper()
+	for {
+		done := true
+		for destination, lsn := range want {
+			var at bool
+			err := db.QueryRow(ctx, "SELECT lsn::pg_lsn >= $2::pg_lsn FROM changes.states WHERE destination = $1",
+				destination, lsn).Scan(&at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done = done && at
+		}
+		if done {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for the cursors %v", want)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // waitStates waits until the store holds n destination states.

@@ -322,7 +322,7 @@ Each batch is a `POST` of a JSON array of CloudEvents, `Content-Type: applicatio
 - `webhook-timestamp`: the try's time in seconds.
 - `webhook-signature`: `v1,` and the base64 HMAC-SHA256 of `id.timestamp.body` under the secret.
 
-Any `2xx` delivers the batch, and the destination's cursor moves past it with one write to the store. A transaction the destination takes nothing from moves its cursor in memory only, so a quiet destination writes nothing.
+Any `2xx` delivers the batch, and the destination's cursor moves past it with one write to the store. A transaction the destination takes nothing from moves its cursor in memory, which is written only once it has passed half of `tail_transactions`, so a quiet destination writes seldom and a restart still finds its cursor among the transactions held.
 
 ### Functions
 
@@ -352,7 +352,7 @@ A destination whose cursor falls behind what the service holds in memory is `gon
 
 The store keeps the set token in `definitions`, each destination's cursor, status (`active`, `paused` or `gone`) and failed batch in `states`, and dead letters in `dead_letters`. In the app's own database, the app reads them with SQL. <gap>The app cannot read a destination's status or dead letters through the service because a status endpoint is not implemented.</gap> <gap>Dead letters cannot be sent again because a redrive is not implemented.</gap>
 
-The store's writes are changes like any other, so they reach the stream too; a destination that does not subscribe to them passes them without a write.
+The store's writes are changes like any other, so they reach the stream too; a destination that does not subscribe to them passes each without a write of its own, so they never feed themselves.
 
 ## Running without it
 
