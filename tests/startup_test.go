@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -49,5 +50,31 @@ func TestStartupRefuses(t *testing.T) {
 	}
 	if confirmed := confirmedFlush(t, ctx, db, name); confirmed == 0 {
 		t.Fatal("the slot of another plugin was dropped")
+	}
+}
+
+func TestFailedSnapshotDropsTheNewSlot(t *testing.T) {
+	url := os.Getenv("PCS_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("PCS_TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := connect(t, ctx, url)
+	name := fmt.Sprintf("pcs_test_%d", time.Now().UnixNano())
+	setUp(t, ctx, db, name)
+	app := config.App{Name: "test", DatabaseURL: url, Slot: name, Publication: name, TailTransactions: 1}
+
+	failing := func(context.Context, reader.Snapshot) error { return errors.New("import failed") }
+	r := reader.New(app, tail.New(1), slog.New(slog.NewTextHandler(io.Discard, nil)), failing)
+	if err := r.Run(ctx); err == nil || !strings.Contains(err.Error(), "import failed") {
+		t.Fatalf("failing snapshot hook: %v", err)
+	}
+	var slots int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM pg_replication_slots WHERE slot_name = $1", name).Scan(&slots); err != nil {
+		t.Fatal(err)
+	}
+	if slots != 0 {
+		t.Fatal("the slot stayed after its snapshot failed, so the next run would skip the initial state")
 	}
 }

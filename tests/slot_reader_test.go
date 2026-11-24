@@ -120,9 +120,13 @@ func TestSlotReader(t *testing.T) {
 	defer stop()
 	exec(t, ctx, db, fmt.Sprintf("INSERT INTO %s (id, body) VALUES (4, 'resumed')", name))
 	waitFor(t, ctx, tl, func() bool { return len(ours()) >= 3 })
-	if n := len(ours()); n != 3 {
-		t.Fatalf("tail holds %d of our transactions after resuming, want 3", n)
+	resumed := ours()
+	if len(resumed) != 3 {
+		t.Fatalf("tail holds %d of our transactions after resuming, want 3", len(resumed))
 	}
+	assertChanges(t, resumed[2].Changes, []change.Change{
+		{Table: table, Operation: change.Insert, Key: id("4"), NewRow: change.Row{"id": text("4"), "body": text("resumed")}},
+	})
 }
 
 func text(s string) change.Value { return change.Value{Kind: change.Text, Text: s} }
