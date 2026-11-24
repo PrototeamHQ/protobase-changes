@@ -69,7 +69,9 @@ func New(ring keys.Ring) (*Codec, error) {
 		}
 		c.aeads = append(c.aeads, aead)
 	}
-	idKey, err := hkdf.Key(sha256.New, ring[0], nil, "protobase-changes event id", 32)
+	// The oldest key makes ids, so adding a new key first keeps every
+	// transaction's id; ids change only once that oldest key is retired.
+	idKey, err := hkdf.Key(sha256.New, ring[len(ring)-1], nil, "protobase-changes event id", 32)
 	if err != nil {
 		return nil, err
 	}

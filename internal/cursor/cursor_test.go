@@ -71,3 +71,10 @@ func TestIDIsStableAndOpaque(t *testing.T) {
 		t.Fatal("another key gives the same id")
 	}
 }
+
+func TestIDSurvivesAddingAKey(t *testing.T) {
+	before := codec(t, key(1)).ID(at)
+	if after := codec(t, key(2), key(1)).ID(at); after != before {
+		t.Fatal("adding a new key changed the id of a position")
+	}
+}

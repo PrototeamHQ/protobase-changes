@@ -209,7 +209,7 @@ Every message is a CloudEvent in the structured JSON format, one per committed t
 ```
 
 - A `thin` payload holds the resource, operation and key; `raw` adds the old and new rows as the WAL states them, a truncate's `cascade` and `restart_identity`, and the actor of the last `protobase_actor` message before the change. A large value an update left unchanged is left out of `new`, never sent as null.
-- The `id` stays the same on every replay of a transaction, so a consumer can drop a duplicate.
+- The `id` stays the same on every replay of a transaction, so a consumer can drop a duplicate. It derives from the last key in `key_files`, so adding a new key first keeps it; retiring that last key changes every id.
 - A transaction the token may read nothing of sends nothing. When nothing was sent for 25 seconds, a `protobase.changes.position` event without data carries the cursor past what was skipped, which keeps the connection alive and the consumer's cursor current.
 
 ### Cursors
