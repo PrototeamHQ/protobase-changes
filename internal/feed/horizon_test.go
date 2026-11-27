@@ -101,3 +101,19 @@ func TestSnapshotStartWithoutAStartSnapshotFails(t *testing.T) {
 		t.Fatal("passed without knowing what the start saw")
 	}
 }
+
+func TestSnapshotStartNeedsTheForgottenSeen(t *testing.T) {
+	f := startedFeed(t, 1)
+	// The tail and the ring of dropped xids hold one each: 11 is forgotten
+	// once 12 is dropped.
+	for i, xid := range []uint32{11, 12, 13} {
+		f.Append(xact(xid, pglogrepl.LSN(110+10*i)))
+	}
+	// This one saw 12 and the newest dropped, but listed 11 in progress.
+	if _, ok, _ := f.SnapshotStart(snapshot(t, "11:14:11")); ok {
+		t.Fatal("a snapshot that may have missed a forgotten transaction passed")
+	}
+	if _, ok, _ := f.SnapshotStart(snapshot(t, "13:14:13")); !ok {
+		t.Fatal("a snapshot that saw every dropped transaction failed")
+	}
+}
