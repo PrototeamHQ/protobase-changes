@@ -78,6 +78,10 @@ func Serve(ctx context.Context, c *websocket.Conn, feeds map[string]*feed.Feed, 
 				cancel()
 			})
 		}
-		w.post(m)
+		if w.post(ctx, m) != nil {
+			// The service stops or a worker's write failed.
+			c.CloseNow()
+			return
+		}
 	}
 }

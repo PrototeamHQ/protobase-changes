@@ -3,11 +3,14 @@ package relay
 import (
 	"context"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/feed"
 )
+
+// inboxSize bounds the messages a worker holds before it applies them; the
+// connection reads no further meanwhile.
+const inboxSize = 1024
 
 // send writes one message to the relay.
 type send func(ctx context.Context, msg any) error
@@ -20,9 +23,7 @@ type worker struct {
 	send send
 	now  func() time.Time
 
-	mu    sync.Mutex
-	inbox []Message
-	wake  chan struct{}
+	inbox chan Message
 
 	// Only run touches these.
 	regs map[string]*registration
@@ -31,17 +32,17 @@ type worker struct {
 }
 
 func newWorker(app string, f *feed.Feed, s send, now func() time.Time) *worker {
-	return &worker{app: app, feed: f, send: s, now: now, wake: make(chan struct{}, 1), regs: map[string]*registration{}}
+	return &worker{app: app, feed: f, send: s, now: now, inbox: make(chan Message, inboxSize), regs: map[string]*registration{}}
 }
 
-// post queues a message for run.
-func (w *worker) post(m Message) {
-	w.mu.Lock()
-	w.inbox = append(w.inbox, m)
-	w.mu.Unlock()
+// post queues a message for run, in order, waiting while the inbox is full
+// until ctx ends.
+func (w *worker) post(ctx context.Context, m Message) error {
 	select {
-	case w.wake <- struct{}{}:
-	default:
+	case w.inbox <- m:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -62,7 +63,10 @@ func (w *worker) run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-changed:
-		case <-w.wake:
+		case m := <-w.inbox:
+			if err := w.apply(ctx, m); err != nil {
+				return err
+			}
 		case <-ready:
 		}
 	}
@@ -82,31 +86,33 @@ func (w *worker) step(ctx context.Context) error {
 
 // receive applies the posted messages in order.
 func (w *worker) receive(ctx context.Context) error {
-	w.mu.Lock()
-	inbox := w.inbox
-	w.inbox = nil
-	w.mu.Unlock()
-	for _, m := range inbox {
-		if m.Type == UnregisterType {
-			delete(w.regs, m.ID)
-			w.waiting = slices.DeleteFunc(w.waiting, func(r *registration) bool { return r.id == m.ID })
-			continue
-		}
-		if w.registered(m.ID) {
-			if err := w.notice(ctx, RefusedType, m.ID, "the id is registered already"); err != nil {
+	for {
+		select {
+		case m := <-w.inbox:
+			if err := w.apply(ctx, m); err != nil {
 				return err
 			}
-			continue
+		default:
+			return nil
 		}
-		r, reason := newRegistration(m)
-		if r == nil {
-			if err := w.notice(ctx, RefusedType, m.ID, reason); err != nil {
-				return err
-			}
-			continue
-		}
-		w.waiting = append(w.waiting, r)
 	}
+}
+
+// apply takes one message: a register waits to be placed, or is refused.
+func (w *worker) apply(ctx context.Context, m Message) error {
+	if m.Type == UnregisterType {
+		delete(w.regs, m.ID)
+		w.waiting = slices.DeleteFunc(w.waiting, func(r *registration) bool { return r.id == m.ID })
+		return nil
+	}
+	if w.registered(m.ID) {
+		return w.notice(ctx, RefusedType, m.ID, "the id is registered already")
+	}
+	r, reason := newRegistration(m)
+	if r == nil {
+		return w.notice(ctx, RefusedType, m.ID, reason)
+	}
+	w.waiting = append(w.waiting, r)
 	return nil
 }
 

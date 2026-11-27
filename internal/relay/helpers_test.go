@@ -91,7 +91,9 @@ func (r *fakeRelay) post(msg map[string]any) {
 	if err != nil {
 		r.t.Fatalf("%s: %v", data, err)
 	}
-	r.w.post(m)
+	if err := r.w.post(context.Background(), m); err != nil {
+		r.t.Fatal(err)
+	}
 }
 
 // step runs the worker once and returns what it sent.
