@@ -1,0 +1,148 @@
+{
+  "frames": [
+    {
+      "from": "relay",
+      "message": {
+        "app": "shop",
+        "fields": [
+          "body"
+        ],
+        "id": "r1",
+        "sid": "s-r1",
+        "snapshot": "967:967:",
+        "subs": [
+          {
+            "resource": "pcs_test_034816_984910019"
+          }
+        ],
+        "type": "register"
+      }
+    },
+    {
+      "from": "relay",
+      "message": {
+        "anonymous": true,
+        "app": "shop",
+        "fields": [
+          "body"
+        ],
+        "id": "visitor",
+        "sid": "",
+        "snapshot": "967:967:",
+        "subs": [
+          {
+            "resource": "pcs_test_034816_984910019"
+          }
+        ],
+        "type": "register"
+      }
+    },
+    {
+      "from": "service",
+      "message": {
+        "specversion": "1.0",
+        "id": "y0jZKG1Ed_ZQSpIbnQQNRQ",
+        "source": "https://shop.example",
+        "type": "protobase.changes.transaction",
+        "time": "2026-11-27T03:48:17.143513Z",
+        "datacontenttype": "application/json",
+        "app": "shop",
+        "data": {
+          "registrations": [
+            {
+              "id": "r1",
+              "cursor": "NZVT4wcmBfpA-LqHSVVjFA78SDwIe72uKcDculmitfQpmuZvWpugkvtQmzFAPXsD4A",
+              "changes": [
+                {
+                  "resource": "pcs_test_034816_984910019",
+                  "operation": "insert",
+                  "key": {
+                    "id": "1"
+                  },
+                  "new": {
+                    "body": "before"
+                  },
+                  "subscriptions": [
+                    {
+                      "id": 0,
+                      "effect": "enter"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "visitor",
+              "cursor": "NZVT4wcmBfpA-LqHSVVjFA78SDwIe72uKcDculmitfQpmuZvWpugkvtQmzFAPXsD4A",
+              "changes": [
+                {
+                  "resource": "pcs_test_034816_984910019",
+                  "operation": "insert",
+                  "key": {
+                    "id": "1"
+                  },
+                  "new": {
+                    "body": "before"
+                  },
+                  "subscriptions": [
+                    {
+                      "id": 0,
+                      "effect": "enter"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "from": "service",
+      "message": {
+        "type": "revoked",
+        "app": "shop",
+        "id": "r1"
+      }
+    },
+    {
+      "from": "service",
+      "message": {
+        "specversion": "1.0",
+        "id": "izsKD0ce0HCxla1fkD8eJQ",
+        "source": "https://shop.example",
+        "type": "protobase.changes.transaction",
+        "time": "2026-11-27T03:48:17.152755Z",
+        "datacontenttype": "application/json",
+        "app": "shop",
+        "data": {
+          "registrations": [
+            {
+              "id": "visitor",
+              "cursor": "VTGGykP0QZokPMZgZwzc0M-1dxhtevpqEROiAf3NI5xYEpbZdA5Pm_k6ESzz3I_ouw",
+              "changes": [
+                {
+                  "resource": "pcs_test_034816_984910019",
+                  "operation": "insert",
+                  "key": {
+                    "id": "2"
+                  },
+                  "new": {
+                    "body": "after"
+                  },
+                  "subscriptions": [
+                    {
+                      "id": 0,
+                      "effect": "enter"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "session": "revoked"
+}

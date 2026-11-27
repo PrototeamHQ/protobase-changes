@@ -1,0 +1,31 @@
+{
+  "frames": [
+    {
+      "from": "relay",
+      "message": {
+        "app": "shop",
+        "fields": [
+          "body"
+        ],
+        "id": "r1",
+        "sid": "s-r1",
+        "snapshot": "907:907:",
+        "subs": [
+          {
+            "resource": "pcs_test_034751_252014378"
+          }
+        ],
+        "type": "register"
+      }
+    },
+    {
+      "from": "service",
+      "message": {
+        "type": "gap",
+        "app": "shop",
+        "id": "r1"
+      }
+    }
+  ],
+  "session": "gap"
+}
