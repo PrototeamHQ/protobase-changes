@@ -335,7 +335,7 @@ Authorization: Bearer <relay key, base64url>
 Sec-WebSocket-Protocol: protobase-relay.json
 ```
 
-The key covers each app that lists it in `relay_key_files`. A missing key, or one no app lists, gets `401` before the handshake. The relay checked each live token before it registers it, so the service opens no token here. Every message is one JSON text message that names its `app`.
+The key covers each app that lists it in `relay_key_files`. A missing key, or one no app lists, gets `401` before the handshake. The connection counts as one of each covered app's `connections`, and gets `429` when one of them has none left. The relay checked each live token before it registers it, so the service opens no token here. Every message is one JSON text message that names its `app`.
 
 From the relay:
 

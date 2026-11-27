@@ -25,13 +25,17 @@ import (
 
 var relayKey = bytes.Repeat([]byte{2}, keys.Size)
 
-// relayServer serves shop, whose relay key is relayKey, and blog, which
-// has another.
-func relayServer(t *testing.T) string {
+// relayServer serves shop, whose relay key is relayKey and whose
+// connections quota is shopQuota, and blog, which has another key.
+func relayServer(t *testing.T, shopQuota *int) string {
 	t.Helper()
 	feeds := map[string]*feed.Feed{}
 	for name, k := range map[string][]byte{"shop": relayKey, "blog": bytes.Repeat([]byte{3}, keys.Size)} {
-		f, err := feed.New(config.App{Name: name, Issuer: issuer, TailTransactions: 3}, keys.Ring{key},
+		var quotas config.Quotas
+		if name == "shop" {
+			quotas.Connections = shopQuota
+		}
+		f, err := feed.New(config.App{Name: name, Issuer: issuer, TailTransactions: 3, Quotas: quotas}, keys.Ring{key},
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 		if err != nil {
 			t.Fatal(err)
@@ -61,7 +65,7 @@ func dialRelay(ctx context.Context, url string, k []byte) (*websocket.Conn, *htt
 }
 
 func TestRelayRefusesAWrongKeyBeforeTheHandshake(t *testing.T) {
-	url := relayServer(t)
+	url := relayServer(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for name, k := range map[string][]byte{"missing": nil, "wrong": bytes.Repeat([]byte{9}, keys.Size), "an app's own key": key} {
@@ -73,7 +77,7 @@ func TestRelayRefusesAWrongKeyBeforeTheHandshake(t *testing.T) {
 }
 
 func TestRelayServesOnlyTheAppsItsKeyCovers(t *testing.T) {
-	url := relayServer(t)
+	url := relayServer(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c, _, err := dialRelay(ctx, url, relayKey)
@@ -101,5 +105,32 @@ func TestRelayServesOnlyTheAppsItsKeyCovers(t *testing.T) {
 	var n relay.Notice
 	if err := json.Unmarshal(data, &n); err != nil || n.Type != relay.RefusedType || n.App != "blog" {
 		t.Fatalf("got %s, want blog refused", data)
+	}
+}
+
+func TestRelayCountsAgainstTheConnectionsQuota(t *testing.T) {
+	limit := 1
+	url := relayServer(t, &limit)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := dialRelay(ctx, url, relayKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, res, err := dialRelay(ctx, url, relayKey); err == nil || res == nil || res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second connection: %v %v, want 429", res, err)
+	}
+	c.Close(websocket.StatusNormalClosure, "")
+	// The quota is released once the connection ends.
+	for {
+		c, res, err := dialRelay(ctx, url, relayKey)
+		if err == nil {
+			c.CloseNow()
+			return
+		}
+		if res == nil || res.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("after closing: %v %v", res, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
