@@ -33,6 +33,15 @@ func TestSawWrapsAround(t *testing.T) {
 	}
 }
 
+func TestSawAllFarApart(t *testing.T) {
+	// 2^31 and more transactions apart, where 32-bit xids would compare the wrong way.
+	old := parse(t, "100:110:103")
+	later := parse(t, "3000000000:3000000010:3000000001")
+	if !later.SawAll(old) || old.SawAll(later) {
+		t.Fatal("snapshots far apart compare the wrong way")
+	}
+}
+
 func TestSawAll(t *testing.T) {
 	b := parse(t, "100:110:103")
 	cases := map[string]bool{
@@ -55,5 +64,17 @@ func TestParseRefuses(t *testing.T) {
 		if _, err := Parse(text); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%q: %v", text, err)
 		}
+	}
+}
+
+func TestInProgressUpTo(t *testing.T) {
+	s := parse(t, "100:110:103,107")
+	for xid, want := range map[uint32]bool{102: false, 103: true, 105: true, 200: true} {
+		if got := s.InProgressUpTo(xid); got != want {
+			t.Errorf("InProgressUpTo(%d) = %v, want %v", xid, got, want)
+		}
+	}
+	if parse(t, "100:110:").InProgressUpTo(200) {
+		t.Error("a snapshot with none in progress")
 	}
 }

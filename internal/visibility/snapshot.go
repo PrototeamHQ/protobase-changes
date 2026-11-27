@@ -16,12 +16,11 @@ const maxInProgress = 1 << 18
 
 // Snapshot is the set of transactions a reader saw, as pg_current_snapshot()
 // states it: every one before xmin, and those before xmax that are not in
-// progress. It keeps the low 32 bits of each xid, as the WAL states them, and
-// compares them as Postgres does, modulo 2^32, which holds within the two
-// billion transactions Postgres lets pass before it freezes old ones.
+// progress. It keeps the full 64-bit xids, so two snapshots compare however
+// far apart they are.
 type Snapshot struct {
-	xmin, xmax uint32
-	inProgress map[uint32]bool
+	xmin, xmax uint64
+	inProgress map[uint64]bool
 }
 
 // Parse reads pg_current_snapshot()'s text, xmin:xmax:xip, the in-progress
@@ -36,10 +35,10 @@ func Parse(text string) (Snapshot, error) {
 		return Snapshot{}, ErrInvalid
 	}
 	xmax, err := strconv.ParseUint(parts[1], 10, 64)
-	if err != nil || xmax < xmin {
+	if err != nil || xmax < xmin || xmax > 1<<62 {
 		return Snapshot{}, ErrInvalid
 	}
-	s := Snapshot{xmin: uint32(xmin), xmax: uint32(xmax), inProgress: map[uint32]bool{}}
+	s := Snapshot{xmin: xmin, xmax: xmax, inProgress: map[uint64]bool{}}
 	if parts[2] == "" {
 		return s, nil
 	}
@@ -52,32 +51,55 @@ func Parse(text string) (Snapshot, error) {
 		if err != nil || xid < xmin || xid >= xmax {
 			return Snapshot{}, ErrInvalid
 		}
-		s.inProgress[uint32(xid)] = true
+		s.inProgress[xid] = true
 	}
 	return s, nil
 }
 
-// Saw reports whether the snapshot saw the transaction xid: it committed, or
-// aborted, before the snapshot was taken.
+// Saw reports whether the snapshot saw the transaction of the 32-bit xid
+// the WAL states: it committed, or aborted, before the snapshot was taken.
+// The xid is read as the one nearest the snapshot's xmax, as Postgres reads
+// a 32-bit xid modulo 2^32, which holds within the two billion transactions
+// Postgres lets pass before it freezes old ones.
 func (s Snapshot) Saw(xid uint32) bool {
-	if precedes(xid, s.xmin) {
+	full := s.widen(xid)
+	if full < int64(s.xmin) {
 		return true
 	}
-	return precedes(xid, s.xmax) && !s.inProgress[xid]
+	return full < int64(s.xmax) && !s.inProgress[uint64(full)]
+}
+
+// saw reports whether the snapshot saw the transaction of the 64-bit xid.
+func (s Snapshot) saw(xid uint64) bool {
+	return xid < s.xmin || xid < s.xmax && !s.inProgress[xid]
 }
 
 // SawAll reports whether s saw every transaction b saw.
 func (s Snapshot) SawAll(b Snapshot) bool {
-	if precedes(s.xmax, b.xmax) {
+	if s.xmax < b.xmax {
 		return false
 	}
 	for xid := range s.inProgress {
-		if precedes(xid, b.xmax) && b.Saw(xid) {
+		if xid < b.xmax && b.saw(xid) {
 			return false
 		}
 	}
 	return true
 }
 
-// precedes compares xids as Postgres does, modulo 2^32.
-func precedes(a, b uint32) bool { return int32(a-b) < 0 }
+// InProgressUpTo reports whether the snapshot lists as in progress any
+// transaction at or before the 32-bit xid, read as Saw reads it.
+func (s Snapshot) InProgressUpTo(xid uint32) bool {
+	full := s.widen(xid)
+	for running := range s.inProgress {
+		if int64(running) <= full {
+			return true
+		}
+	}
+	return false
+}
+
+// widen reads a 32-bit xid as the 64-bit one nearest the snapshot's xmax.
+func (s Snapshot) widen(xid uint32) int64 {
+	return int64(s.xmax) + int64(int32(xid-uint32(s.xmax)))
+}
