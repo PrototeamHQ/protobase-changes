@@ -16,7 +16,7 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/supervise"
 )
 
-// feeds loads each app's keys and makes its feed, keyed by app name.
+// feeds loads each app's keys and relay keys and makes its feed, keyed by app name.
 func feeds(cfg config.Config, log *slog.Logger) (map[string]*feed.Feed, error) {
 	out := map[string]*feed.Feed{}
 	for _, app := range cfg.Apps {
@@ -27,6 +27,9 @@ func feeds(cfg config.Config, log *slog.Logger) (map[string]*feed.Feed, error) {
 		f, err := feed.New(app, ring, log)
 		if err != nil {
 			return nil, err
+		}
+		if f.RelayKeys, err = keys.Load(app.RelayKeyFiles); err != nil {
+			return nil, fmt.Errorf("app %s: %w", app.Name, err)
 		}
 		out[app.Name] = f
 	}
