@@ -1,5 +1,6 @@
 // Package serve lets consumers pull an app's changes over WebSocket,
-// server-sent events or HTTP long polling, each resuming from a cursor.
+// server-sent events or HTTP long polling, each resuming from a cursor, and
+// serves the relay's connection.
 package serve
 
 import (
@@ -59,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(changesPattern, s.changes)
 	mux.HandleFunc(destinationsPattern, s.putDestinations)
 	mux.HandleFunc(resumePattern, s.resume)
+	mux.HandleFunc(relayPattern, s.relay)
 	return mux
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/keys"
 	"github.com/PrototeamHQ/protobase-changes/internal/revoke"
 	"github.com/PrototeamHQ/protobase-changes/internal/tail"
+	"github.com/PrototeamHQ/protobase-changes/internal/visibility"
 )
 
 // Entry is one committed transaction with its cursor and event id, made once
@@ -35,12 +36,15 @@ var ErrNotReady = errors.New("the change stream has not caught up")
 
 // Feed is one app's change stream as consumers read it. It is safe for concurrent use.
 type Feed struct {
-	App     config.App
-	Keys    keys.Ring
-	Cursors *cursor.Codec
-	Revoked *revoke.Set
-	tail    *tail.Tail[*Entry]
-	log     *slog.Logger
+	App  config.App
+	Keys keys.Ring
+	// RelayKeys authenticate the relay's connection for the app; none when
+	// no relay serves it.
+	RelayKeys keys.Ring
+	Cursors   *cursor.Codec
+	Revoked   *revoke.Set
+	tail      *tail.Tail[*Entry]
+	log       *slog.Logger
 
 	mu      sync.Mutex
 	started bool
@@ -60,6 +64,12 @@ type Feed struct {
 	end pglogrepl.LSN
 	// idle is the latest position Advance moved the head to.
 	idle pglogrepl.LSN
+	// horizon tells the snapshots that saw everything before the floor.
+	horizon horizon
+	// startSnapshot is the snapshot the stream last reported through Started, and
+	// restarted whether a Reset dropped the tail since the last Resume.
+	startSnapshot *visibility.Snapshot
+	restarted     bool
 }
 
 func New(app config.App, ring keys.Ring, log *slog.Logger) (*Feed, error) {
@@ -70,7 +80,7 @@ func New(app config.App, ring keys.Ring, log *slog.Logger) (*Feed, error) {
 	return &Feed{
 		App: app, Keys: ring, Cursors: codec, Revoked: revoke.New(),
 		tail: tail.New[*Entry](app.TailTransactions), log: log.With("app", app.Name),
-		readyCh: make(chan struct{}),
+		readyCh: make(chan struct{}), horizon: newHorizon(app.TailTransactions),
 	}, nil
 }
 
@@ -87,6 +97,12 @@ func (f *Feed) Resume(epoch cursor.Epoch, from, caughtUp pglogrepl.LSN) (pglogre
 	}
 	if !f.started {
 		f.start = from
+	}
+	if !f.started || from > f.end || f.restarted {
+		// The tail holds nothing from before from, all of which the snapshot
+		// reported through Started saw.
+		f.horizon.reset(f.startSnapshot)
+		f.restarted = false
 	}
 	if !f.started || from > f.end {
 		f.tail.Raise(from)
@@ -124,6 +140,7 @@ func (f *Feed) Reset(from pglogrepl.LSN) {
 	f.start = from
 	f.tail.Reset(from)
 	f.end = from
+	f.restarted = true
 	f.notReady()
 }
 
@@ -150,6 +167,14 @@ func (f *Feed) Revoke(rs []revoke.Revocation) {
 	f.Revoked.AddAll(rs, time.Now())
 }
 
+// Started records a snapshot taken after the stream's start, which saw
+// every transaction committed before it, before the stream resumes.
+func (f *Feed) Started(s visibility.Snapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startSnapshot = &s
+}
+
 // Decoded marks that the stream sent every transaction committed before lsn.
 func (f *Feed) Decoded(lsn pglogrepl.LSN) {
 	f.mu.Lock()
@@ -172,12 +197,16 @@ func (f *Feed) Append(tx *change.Transaction) {
 	}
 
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	at := cursor.Position{Epoch: f.epoch, LSN: tx.CommitLSN}
 	f.end = tx.EndLSN
 	f.ready = f.ready || f.end >= f.caughtUp
 	f.signalReady()
-	f.mu.Unlock()
-	f.tail.Append(&Entry{Tx: tx, Cursor: f.Cursors.Seal(at), ID: f.Cursors.ID(at)})
+	// Under mu, so SnapshotStart never sees the floor of a drop the horizon
+	// does not know yet.
+	if dropped, ok := f.tail.Append(&Entry{Tx: tx, Cursor: f.Cursors.Seal(at), ID: f.Cursors.ID(at)}); ok {
+		f.horizon.drop(dropped.Tx.Xid)
+	}
 }
 
 // signalReady closes readyCh once the feed is ready. Called with mu held.
@@ -210,6 +239,22 @@ func (f *Feed) Head() (cursor.Position, error) {
 		return cursor.Position{}, ErrNotReady
 	}
 	return cursor.Position{Epoch: f.epoch, LSN: f.end}, nil
+}
+
+// SnapshotStart returns where a consumer that read the database at snapshot
+// s starts: at the floor, taking every transaction from there on that s did
+// not see. ok is false when s may not have seen a transaction the feed no
+// longer holds.
+func (f *Feed) SnapshotStart(s visibility.Snapshot) (lsn pglogrepl.LSN, ok bool, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.ready {
+		return 0, false, ErrNotReady
+	}
+	if !f.horizon.sawAll(s) {
+		return 0, false, nil
+	}
+	return f.tail.Floor(), true, nil
 }
 
 // Since returns the transactions committed after lsn, oldest first. ok is

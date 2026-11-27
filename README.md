@@ -146,6 +146,7 @@ The config lists every app database to follow; unknown fields stop startup.
       "tail_transactions": 10000,
       "issuer": "https://shop.example",
       "key_files": ["/run/secrets/shop_changes_key"],
+      "relay_key_files": ["/run/secrets/shop_relay_key"],
       "store": { "kind": "postgres", "url": "postgres://changes@db.internal/shop" },
       "functions_url": "http://shop.internal/api/functions",
       "quotas": { "changes_per_second": 5000, "connections": 200 }
@@ -154,7 +155,7 @@ The config lists every app database to follow; unknown fields stop startup.
 }
 ```
 
-- `listen`: the address the pull and destination endpoints serve on.
+- `listen`: the address the pull, destination and relay endpoints serve on.
 
 - `slot`: the logical replication slot, created with the `pgoutput` plugin on first start and reused after. A slot of that name with another plugin or on another database stops startup; it is never dropped. A slot Postgres invalidated is dropped and created again, as [Running without it](#running-without-it) says.
 - `publication`: must exist before startup.
@@ -162,6 +163,7 @@ The config lists every app database to follow; unknown fields stop startup.
 - `tail_transactions`: how many of the latest committed transactions stay in memory.
 - `issuer`: the `iss` of the app's tokens, and the `source` of its events.
 - `key_files`: files that each hold one 32-byte key the app shares, base64url without padding. The first one encrypts cursors; every one opens tokens and cursors, so a new key goes first and the old one stays listed until what it sealed has expired.
+- `relay_key_files`: optional, files that each hold one key, in the format of `key_files`, that the [relay's connection](#the-relays-connection) authenticates with for this app. Keep them apart from `key_files`: a relay key opens no token or cursor.
 - `archive`: optional, the app's Iceberg archive below. Without it the service confirms the slot itself, up to where no consumer needs the WAL any longer.
 - `store`: where [destinations](#destinations) and their cursors are kept, `{"kind": "postgres", "url": ...}` for a `changes` schema in that database, or `{"kind": "sqlite", "path": ...}` for a file. Without it the app has no destinations.
 - `functions_url`: where the app serves its API functions, which [function destinations](#functions) call by name.
@@ -322,6 +324,57 @@ A stream of that session stops before any change committed after the revocation,
 - `410`: the cursor can no longer resume.
 - `429`: the app has as many open connections as its `connections` quota allows.
 - `503`: the app's stream has not yet read its revocations and all the WAL there was when it connected, so revocations may still be unknown.
+
+## The relay's connection
+
+The relay carries every page's live queries over one WebSocket per relay instance, for every app it serves, instead of one connection per page:
+
+```http
+GET /relay
+Authorization: Bearer <relay key, base64url>
+Sec-WebSocket-Protocol: protobase-relay.json
+```
+
+The key covers each app that lists it in `relay_key_files`. A missing key, or one no app lists, gets `401` before the handshake. The connection counts as one of each covered app's `connections`, and gets `429` when one of them has none left. The relay checked each live token before it registers it, so the service opens no token here. Every message is one JSON text message that names its `app`.
+
+From the relay:
+
+```json
+{ "type": "register", "app": "shop", "id": "r1", "sid": "s9",
+  "subs": [ { "resource": "messages", "where": { "eq": ["channel_id", "xyz"] } } ],
+  "fields": ["body", "edited_at"], "snapshot": "894:896:894" }
+{ "type": "unregister", "app": "shop", "id": "r1" }
+```
+
+- `id` is the relay's own id of the registration, unique within the app.
+- `subs` are the live token's subscriptions, as [Conditions](#conditions) says.
+- `sid` is the session that [revokes](#revocation) the registration, or `"anonymous": true` for a visitor's token without one.
+- `fields` are the columns each change carries in `old` and `new`, besides its `key`; without them a change holds only the key, as a `thin` payload does.
+- `snapshot` is the `pg_current_snapshot()` text, `xmin:xmax:xip`, of the transaction the page read in. The registration gets each transaction the snapshot did not see: one whose xid is at or past `xmax`, or in `xip`. Unlike a WAL position read in the same transaction, this is exact: Postgres can make a transaction visible before one that committed earlier in the WAL.
+- `cursor` instead resumes after the cursor of an event, as a pull does.
+
+From the service:
+
+- An event, one per transaction, in the CloudEvent shape of a pull, with an `app` attribute and an entry for each registration the transaction concerns. An entry holds the registration's `id`, the transaction's `cursor`, and its changes with their `subscriptions`. The relay passes the cursor on to the page unread.
+
+  ```json
+  { "specversion": "1.0", "id": "kR2vB8...", "source": "https://shop.example",
+    "type": "protobase.changes.transaction", "time": "2026-11-24T10:00:00.123456Z",
+    "datacontenttype": "application/json", "app": "shop",
+    "data": { "registrations": [
+      { "id": "r1", "cursor": "Ab3x...", "changes": [
+        { "resource": "messages", "operation": "update", "key": { "id": "42" },
+          "new": { "body": "hey", "edited_at": null },
+          "subscriptions": [ { "id": 0, "effect": "update" } ] } ] } ] } }
+  ```
+
+- `{"type": "gap", "app", "id"}`: the service no longer holds every transaction after the registration's start, or it fell that far behind. The registration ends, and the page reads again.
+- `{"type": "revoked", "app", "id"}`: the app revoked the registration's session, before any change committed after the revocation. The registration ends.
+- `{"type": "refused", "app", "id", "reason"}`: the register is not served, such as for an app the key does not cover, a taken id, invalid conditions, a snapshot or cursor that does not open, or a start that is not exactly one of `snapshot` and `cursor`.
+
+A message that is not one of the relay's closes the connection with `1008`. Registrations wait while the app's stream has not caught up, as a pull gets `503`. A snapshot is checked against the snapshot the stream took when it started and the transactions the in-memory tail dropped since: it must have seen every one. The service keeps the xids of as many dropped transactions as the tail holds; of older ones it keeps only the newest, so a snapshot that lists a transaction up to that one as in progress gets `gap` too. <gap>A snapshot taken while a transaction runs that began before the dropped transactions whose xids are kept gets gap, because keeping every dropped xid is not implemented.</gap>
+
+The recorded sessions in [`tests/relay-sessions/`](tests/relay-sessions) hold every frame of real sessions in both directions, one JSON file each: a register from a snapshot, a register from a cursor, `gap`, `revoked`, `refused` and unregister, each with its matched changes. The integration tests write them against real Postgres, so the relay's tests replay them as they are.
 
 ## Destinations
 

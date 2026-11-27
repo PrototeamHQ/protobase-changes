@@ -32,12 +32,13 @@ func New[T Item](size int) *Tail[T] {
 }
 
 // Append adds an item, dropping the oldest when full, and wakes every waiter
-// on Changed.
-func (t *Tail[T]) Append(item T) {
+// on Changed. It returns the item it dropped, if any.
+func (t *Tail[T]) Append(item T) (dropped T, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.full {
-		t.floor = max(t.floor, t.ring[t.next].Commit())
+		dropped, ok = t.ring[t.next], true
+		t.floor = max(t.floor, dropped.Commit())
 	}
 	t.ring[t.next] = item
 	t.next = (t.next + 1) % len(t.ring)
@@ -46,6 +47,7 @@ func (t *Tail[T]) Append(item T) {
 	}
 	close(t.changed)
 	t.changed = make(chan struct{})
+	return dropped, ok
 }
 
 // Raise moves the floor up to lsn: the tail holds nothing committed at or

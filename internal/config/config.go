@@ -25,6 +25,9 @@ type App struct {
 	Issuer string `json:"issuer"`
 	// KeyFiles hold the keys shared with the app: the first encrypts, every one decrypts.
 	KeyFiles []string `json:"key_files"`
+	// RelayKeyFiles hold the keys the relay's connection authenticates with
+	// for this app, apart from KeyFiles: any one of them covers the app.
+	RelayKeyFiles []string `json:"relay_key_files"`
 	// Store keeps the app's destinations and their cursors; without one the
 	// app has no destinations.
 	Store *Store `json:"store"`

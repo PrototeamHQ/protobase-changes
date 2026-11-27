@@ -17,7 +17,12 @@ const (
 	destinationsPattern = "PUT /apps/{" + AppParam + "}/destinations"
 	// resumePattern resumes a paused or gone destination.
 	resumePattern = "POST /apps/{" + AppParam + "}/destinations/{" + DestinationParam + "}/resume"
+	// relayPattern serves the relay's connection, for every app its key covers.
+	relayPattern = "GET " + RelayPath
 )
+
+// RelayPath is the path of the relay's connection.
+const RelayPath = "/relay"
 
 // DestinationsPath is the path an app puts its destinations to.
 func DestinationsPath(app string) string {

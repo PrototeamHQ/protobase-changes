@@ -121,3 +121,15 @@ func TestWakeClosesChangedWithoutAnItem(t *testing.T) {
 		t.Fatal("Wake added an item")
 	}
 }
+
+func TestAppendReturnsTheDroppedItem(t *testing.T) {
+	tl := New[item](2)
+	for _, l := range []item{10, 20} {
+		if _, ok := tl.Append(l); ok {
+			t.Fatalf("appending %v dropped an item", l)
+		}
+	}
+	if dropped, ok := tl.Append(30); !ok || dropped != 10 {
+		t.Fatalf("dropped %v %v, want 10", dropped, ok)
+	}
+}

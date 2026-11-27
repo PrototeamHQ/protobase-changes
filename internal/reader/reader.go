@@ -21,6 +21,7 @@ import (
 	"github.com/PrototeamHQ/protobase-changes/internal/decode"
 	"github.com/PrototeamHQ/protobase-changes/internal/revoke"
 	"github.com/PrototeamHQ/protobase-changes/internal/slot"
+	"github.com/PrototeamHQ/protobase-changes/internal/visibility"
 )
 
 // statusInterval keeps the connection well inside the default wal_sender_timeout
@@ -56,6 +57,9 @@ type Sink interface {
 	// Revoke records the revocations committed before the stream's start,
 	// read from revoke.Table before the stream resumes.
 	Revoke(rs []revoke.Revocation)
+	// Started records a snapshot taken after the stream's start, which saw
+	// every transaction committed before it, before the stream resumes.
+	Started(s visibility.Snapshot)
 }
 
 type Reader struct {
@@ -181,7 +185,8 @@ func (r *Reader) Run(ctx context.Context) error {
 // Postgres invalidated the old one. A new slot's exported snapshot shows
 // exactly what committed before its start. A reused slot's start was decoded
 // before, so everything that committed before it shows in a fresh snapshot.
-// Either way the stream brings every later revocation.
+// Either way the stream brings every later revocation. The same snapshot
+// goes to the sink as the one that saw everything before the stream's start.
 func (r *Reader) loadRevocations(ctx context.Context, snapshot string) error {
 	db, err := pgx.Connect(ctx, r.app.DatabaseURL)
 	if err != nil {
@@ -202,7 +207,16 @@ func (r *Reader) loadRevocations(ctx context.Context, snapshot string) error {
 	if err != nil {
 		return err
 	}
+	var text string
+	if err := tx.QueryRow(ctx, "SELECT pg_current_snapshot()::text").Scan(&text); err != nil {
+		return fmt.Errorf("read the snapshot: %w", err)
+	}
+	seen, err := visibility.Parse(text)
+	if err != nil {
+		return fmt.Errorf("read the snapshot %q: %w", text, err)
+	}
 	r.sink.Revoke(rs)
+	r.sink.Started(seen)
 	return nil
 }
 

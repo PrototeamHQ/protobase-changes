@@ -46,6 +46,8 @@ func TestRestartPastARevocationStillRefusesIt(t *testing.T) {
 	r.Confirm(head.LSN)
 	waitConfirmed(t, ctx, db, name, head.LSN-1)
 	stop()
+	// The server releases the slot only once the old stream's walsender exits.
+	waitInactive(t, ctx, db, name)
 
 	f := newFeed(t, app)
 	t.Cleanup(start(t, ctx, reader.New(app, f, log, nil)))

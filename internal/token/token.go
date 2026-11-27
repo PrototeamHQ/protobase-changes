@@ -49,10 +49,35 @@ type claims struct {
 	Sid     string  `json:"sid"`
 	Payload Payload `json:"payload"`
 	Cursor  string  `json:"cursor"`
-	Subs    []struct {
-		Resource string          `json:"resource"`
-		Where    json.RawMessage `json:"where"`
-	} `json:"subs"`
+	Subs    []Sub   `json:"subs"`
+}
+
+// Sub is one subscription as a token lists it.
+type Sub struct {
+	Resource string          `json:"resource"`
+	Where    json.RawMessage `json:"where"`
+}
+
+// Subscriptions compiles subs into an index, each with its position as its
+// id. A sub without a resource fails with ErrInvalid, and conditions that do
+// not compile with ErrConditions.
+func Subscriptions(subs []Sub) (*match.Index, error) {
+	out := make([]match.Subscription, len(subs))
+	for i, sub := range subs {
+		if sub.Resource == "" {
+			return nil, ErrInvalid
+		}
+		out[i] = match.Subscription{ID: i, Resource: sub.Resource}
+		if len(sub.Where) == 0 || string(sub.Where) == "null" {
+			continue
+		}
+		where, err := match.Compile(sub.Where)
+		if err != nil {
+			return nil, ErrConditions
+		}
+		out[i].Where = where
+	}
+	return match.NewIndex(out), nil
 }
 
 // Decrypt opens a compact JWE of alg dir and enc A256GCM under any key of the
@@ -86,22 +111,11 @@ func Open(raw string, ring keys.Ring, issuer string, now time.Time) (Token, erro
 	}
 
 	t := Token{Subject: std.Subject, Session: own.Sid, Expiry: std.Expiry.Time(), Payload: own.Payload}
-	subs := make([]match.Subscription, len(own.Subs))
-	for i, sub := range own.Subs {
-		if sub.Resource == "" {
-			return Token{}, ErrInvalid
-		}
-		subs[i] = match.Subscription{ID: i, Resource: sub.Resource}
-		if len(sub.Where) == 0 || string(sub.Where) == "null" {
-			continue
-		}
-		where, err := match.Compile(sub.Where)
-		if err != nil {
-			return Token{}, ErrConditions
-		}
-		subs[i].Where = where
+	subs, err := Subscriptions(own.Subs)
+	if err != nil {
+		return Token{}, err
 	}
-	t.Subscriptions = match.NewIndex(subs)
+	t.Subscriptions = subs
 	if own.Cursor != "" {
 		lsn, err := pglogrepl.ParseLSN(own.Cursor)
 		if err != nil {
