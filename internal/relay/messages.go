@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 
 	"github.com/PrototeamHQ/protobase-changes/internal/event"
 	"github.com/PrototeamHQ/protobase-changes/internal/token"
@@ -46,7 +47,10 @@ func parse(data []byte) (Message, error) {
 	var m Message
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil || dec.More() {
+	if err := dec.Decode(&m); err != nil {
+		return Message{}, errMessage
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		return Message{}, errMessage
 	}
 	if (m.Type != RegisterType && m.Type != UnregisterType) || m.App == "" || m.ID == "" {
