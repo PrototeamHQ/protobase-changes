@@ -9,10 +9,10 @@
         ],
         "id": "r1",
         "sid": "s-r1",
-        "snapshot": "967:967:",
+        "snapshot": "832:832:",
         "subs": [
           {
-            "resource": "pcs_test_034816_984910019"
+            "resource": "pcs_test_040853_949217023"
           }
         ],
         "type": "register"
@@ -28,10 +28,10 @@
         ],
         "id": "visitor",
         "sid": "",
-        "snapshot": "967:967:",
+        "snapshot": "832:832:",
         "subs": [
           {
-            "resource": "pcs_test_034816_984910019"
+            "resource": "pcs_test_040853_949217023"
           }
         ],
         "type": "register"
@@ -41,20 +41,20 @@
       "from": "service",
       "message": {
         "specversion": "1.0",
-        "id": "y0jZKG1Ed_ZQSpIbnQQNRQ",
+        "id": "f4K2OXmwB7Jz22YAdmYOCA",
         "source": "https://shop.example",
         "type": "protobase.changes.transaction",
-        "time": "2026-11-27T03:48:17.143513Z",
+        "time": "2026-11-27T04:08:54.116417Z",
         "datacontenttype": "application/json",
         "app": "shop",
         "data": {
           "registrations": [
             {
               "id": "r1",
-              "cursor": "NZVT4wcmBfpA-LqHSVVjFA78SDwIe72uKcDculmitfQpmuZvWpugkvtQmzFAPXsD4A",
+              "cursor": "kdv_ZlB9zm-B_CcXn8bfZLYogMCboRELMJ2SLbJRpGS_6mGZfEuDn_DUQy1NdD7DzA",
               "changes": [
                 {
-                  "resource": "pcs_test_034816_984910019",
+                  "resource": "pcs_test_040853_949217023",
                   "operation": "insert",
                   "key": {
                     "id": "1"
@@ -73,10 +73,10 @@
             },
             {
               "id": "visitor",
-              "cursor": "NZVT4wcmBfpA-LqHSVVjFA78SDwIe72uKcDculmitfQpmuZvWpugkvtQmzFAPXsD4A",
+              "cursor": "kdv_ZlB9zm-B_CcXn8bfZLYogMCboRELMJ2SLbJRpGS_6mGZfEuDn_DUQy1NdD7DzA",
               "changes": [
                 {
-                  "resource": "pcs_test_034816_984910019",
+                  "resource": "pcs_test_040853_949217023",
                   "operation": "insert",
                   "key": {
                     "id": "1"
@@ -109,20 +109,20 @@
       "from": "service",
       "message": {
         "specversion": "1.0",
-        "id": "izsKD0ce0HCxla1fkD8eJQ",
+        "id": "bY6SHQYkxR0aGCSPNR-kmg",
         "source": "https://shop.example",
         "type": "protobase.changes.transaction",
-        "time": "2026-11-27T03:48:17.152755Z",
+        "time": "2026-11-27T04:08:54.124123Z",
         "datacontenttype": "application/json",
         "app": "shop",
         "data": {
           "registrations": [
             {
               "id": "visitor",
-              "cursor": "VTGGykP0QZokPMZgZwzc0M-1dxhtevpqEROiAf3NI5xYEpbZdA5Pm_k6ESzz3I_ouw",
+              "cursor": "8nTaNdqNIT1CaxMQxv6y9F1RTuXKuKat46S5yPWopMApPxb8rCH3oVCmIftucKHJwg",
               "changes": [
                 {
-                  "resource": "pcs_test_034816_984910019",
+                  "resource": "pcs_test_040853_949217023",
                   "operation": "insert",
                   "key": {
                     "id": "2"

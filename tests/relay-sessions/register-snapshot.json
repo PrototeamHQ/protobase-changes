@@ -9,10 +9,10 @@
         ],
         "id": "r1",
         "sid": "s-r1",
-        "snapshot": "894:896:894",
+        "snapshot": "812:814:812",
         "subs": [
           {
-            "resource": "pcs_test_034750_841647917"
+            "resource": "pcs_test_040853_414765816"
           }
         ],
         "type": "register"
@@ -22,20 +22,20 @@
       "from": "service",
       "message": {
         "specversion": "1.0",
-        "id": "Lz6a_OqVEQOMAcwdWmVDlQ",
+        "id": "NlX-UHaL-Pw_ATX5Zw4RKA",
         "source": "https://shop.example",
         "type": "protobase.changes.transaction",
-        "time": "2026-11-27T03:47:51.011738Z",
+        "time": "2026-11-27T04:08:53.549413Z",
         "datacontenttype": "application/json",
         "app": "shop",
         "data": {
           "registrations": [
             {
               "id": "r1",
-              "cursor": "fBbg_RO6fQECA93KKG6-rqkmfdwjoyJzSONDUNmTAACbnyeD4Hr908fAJ8KzchixWA",
+              "cursor": "E6NquALBU3XeX-VbgAmpGkAJPBLxVQhwWk_vkLth4bpWaMMqB5gAnJRLeHiGpYjAfw",
               "changes": [
                 {
-                  "resource": "pcs_test_034750_841647917",
+                  "resource": "pcs_test_040853_414765816",
                   "operation": "insert",
                   "key": {
                     "id": "2"
@@ -60,20 +60,20 @@
       "from": "service",
       "message": {
         "specversion": "1.0",
-        "id": "r2AJWDPwuP6gC4vu3s9Sig",
+        "id": "tWax-ZQxiehJP01GinAXMg",
         "source": "https://shop.example",
         "type": "protobase.changes.transaction",
-        "time": "2026-11-27T03:47:51.016062Z",
+        "time": "2026-11-27T04:08:53.552679Z",
         "datacontenttype": "application/json",
         "app": "shop",
         "data": {
           "registrations": [
             {
               "id": "r1",
-              "cursor": "PE3Hcce6ahJV06sAaT9jLPakoTftmSRK_qdvdPortl3nxBNEItI6RJagyKo2pFBn0w",
+              "cursor": "wCZfGmmdiLxrcK2o4zImy2DKeHOcLJCXt4ohBYiJsW_Kgas5iJ4zDDw6Gn4gKQUlqw",
               "changes": [
                 {
-                  "resource": "pcs_test_034750_841647917",
+                  "resource": "pcs_test_040853_414765816",
                   "operation": "insert",
                   "key": {
                     "id": "3"

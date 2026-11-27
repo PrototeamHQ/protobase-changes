@@ -9,10 +9,10 @@
         ],
         "id": "r1",
         "sid": "s-r1",
-        "snapshot": "907:907:",
+        "snapshot": "825:825:",
         "subs": [
           {
-            "resource": "pcs_test_034751_252014378"
+            "resource": "pcs_test_040853_757254609"
           }
         ],
         "type": "register"

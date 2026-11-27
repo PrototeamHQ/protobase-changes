@@ -9,10 +9,10 @@
         ],
         "id": "r1",
         "sid": "s-r1",
-        "snapshot": "901:901:",
+        "snapshot": "819:819:",
         "subs": [
           {
-            "resource": "pcs_test_034751_059093163"
+            "resource": "pcs_test_040853_602794016"
           }
         ],
         "type": "register"
@@ -22,20 +22,20 @@
       "from": "service",
       "message": {
         "specversion": "1.0",
-        "id": "YxYpu_1zD8_YPC5TcV6-_g",
+        "id": "vOFlh_R-yEI26Yu5fVa6Uw",
         "source": "https://shop.example",
         "type": "protobase.changes.transaction",
-        "time": "2026-11-27T03:47:51.207396Z",
+        "time": "2026-11-27T04:08:53.723879Z",
         "datacontenttype": "application/json",
         "app": "shop",
         "data": {
           "registrations": [
             {
               "id": "r1",
-              "cursor": "DxaEv3HedVNdG2K9n3wNFBft9sC6lT4ttB265We-Q3GSUZJI-zGxbXQeqEz1iNx7Wg",
+              "cursor": "1r-yly3RT3ZHfYP6jnVmXtsspomrAsFiEgX5jfBh41JPv0l6aFEjFQiDYl6jO47tZQ",
               "changes": [
                 {
-                  "resource": "pcs_test_034751_059093163",
+                  "resource": "pcs_test_040853_602794016",
                   "operation": "insert",
                   "key": {
                     "id": "1"
@@ -60,20 +60,20 @@
       "from": "service",
       "message": {
         "specversion": "1.0",
-        "id": "drmdCLYduSCUourXDdGgCQ",
+        "id": "cE2IzS72zCAMtV1ARfgkxA",
         "source": "https://shop.example",
         "type": "protobase.changes.transaction",
-        "time": "2026-11-27T03:47:51.212543Z",
+        "time": "2026-11-27T04:08:53.726854Z",
         "datacontenttype": "application/json",
         "app": "shop",
         "data": {
           "registrations": [
             {
               "id": "r1",
-              "cursor": "bgLy5QL3AQcC_ZKBGRbkBZsWtoKe-pk_3b3yxPiDdnH1w4HstTUjWujsx_XSXZnAuw",
+              "cursor": "6i0cBOQCb9Jo8XprzPYCwzrBl_WvmzUH5TkG1UPhjAq6VJRKoXDyRGD5kQPSNQu2SQ",
               "changes": [
                 {
-                  "resource": "pcs_test_034751_059093163",
+                  "resource": "pcs_test_040853_602794016",
                   "operation": "insert",
                   "key": {
                     "id": "2"
@@ -106,7 +106,7 @@
       "from": "relay",
       "message": {
         "app": "shop",
-        "cursor": "DxaEv3HedVNdG2K9n3wNFBft9sC6lT4ttB265We-Q3GSUZJI-zGxbXQeqEz1iNx7Wg",
+        "cursor": "1r-yly3RT3ZHfYP6jnVmXtsspomrAsFiEgX5jfBh41JPv0l6aFEjFQiDYl6jO47tZQ",
         "fields": [
           "body"
         ],
@@ -114,7 +114,7 @@
         "sid": "s-r1",
         "subs": [
           {
-            "resource": "pcs_test_034751_059093163"
+            "resource": "pcs_test_040853_602794016"
           }
         ],
         "type": "register"
@@ -124,20 +124,20 @@
       "from": "service",
       "message": {
         "specversion": "1.0",
-        "id": "drmdCLYduSCUourXDdGgCQ",
+        "id": "cE2IzS72zCAMtV1ARfgkxA",
         "source": "https://shop.example",
         "type": "protobase.changes.transaction",
-        "time": "2026-11-27T03:47:51.212543Z",
+        "time": "2026-11-27T04:08:53.726854Z",
         "datacontenttype": "application/json",
         "app": "shop",
         "data": {
           "registrations": [
             {
               "id": "r2",
-              "cursor": "bgLy5QL3AQcC_ZKBGRbkBZsWtoKe-pk_3b3yxPiDdnH1w4HstTUjWujsx_XSXZnAuw",
+              "cursor": "6i0cBOQCb9Jo8XprzPYCwzrBl_WvmzUH5TkG1UPhjAq6VJRKoXDyRGD5kQPSNQu2SQ",
               "changes": [
                 {
-                  "resource": "pcs_test_034751_059093163",
+                  "resource": "pcs_test_040853_602794016",
                   "operation": "insert",
                   "key": {
                     "id": "2"
